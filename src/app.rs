@@ -25,7 +25,7 @@ use crate::turn::{Turn, Turning};
 use crate::view::{self, Cmd, MarginNote, PageRow, PageView, Side};
 
 /// How long a passing message stays up.
-const TOAST: Duration = Duration::from_millis(2500);
+const TOAST: Duration = Duration::from_millis(2000);
 
 /// What keys are doing at the moment.
 #[derive(Clone, Debug, PartialEq)]
