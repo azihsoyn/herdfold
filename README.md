@@ -48,7 +48,10 @@ on from left to right. Elsewhere it shows one page at a time.
 - **Your place is kept** per book in `~/.local/share/herdbook/marks.json`
   (`$XDG_DATA_HOME` if set), as a position in the text rather than a page
   number, so it survives a change of pane size.
-- **There is no scrolling.** Only turning.
+- **There is no scrolling.** Only turning. A turn is drawn: the free edge of
+  the sheet (`┃`) crosses the right page and then the left, the next pages
+  appearing behind it, in about a third of a second (`--no-animation` turns
+  at once). Jumps from the contents are not animated.
 
 `--no-spread` keeps one page at a time even inside herdr.
 

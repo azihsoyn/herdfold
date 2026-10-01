@@ -8,6 +8,7 @@ mod herdr;
 mod layout;
 mod marks;
 mod server;
+mod turn;
 mod view;
 
 use std::io::Read;
@@ -46,6 +47,10 @@ struct Cli {
     #[arg(long, value_name = "COLS", value_parser = clap::value_parser!(u16).range(24..=240))]
     measure: Option<u16>,
 
+    /// Turn pages at once, without drawing the turn.
+    #[arg(long)]
+    no_animation: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -80,7 +85,9 @@ enum ApiCommand {
 fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
     match cli.command {
-        Some(Command::Reader(ReaderCommand::Attach)) => Ok(cli::finish("reader:attach", attach::run())),
+        Some(Command::Reader(ReaderCommand::Attach)) => {
+            Ok(cli::finish("reader:attach", attach::run()))
+        }
         Some(Command::Api(ApiCommand::Schema { json, output })) => {
             Ok(cli::finish("api:schema", cli::api_schema(json, output)))
         }
@@ -88,16 +95,30 @@ fn main() -> Result<ExitCode> {
             let (Some(format), Some(file)) = (cli.format, cli.file) else {
                 unreachable!("clap requires both without a subcommand");
             };
-            open(format, file, cli.no_spread, cli.measure.map(usize::from))?;
+            open(
+                format,
+                file,
+                cli.no_spread,
+                cli.measure.map(usize::from),
+                !cli.no_animation,
+            )?;
             Ok(ExitCode::SUCCESS)
         }
     }
 }
 
-fn open(format: Format, file: PathBuf, no_spread: bool, measure: Option<usize>) -> Result<()> {
+fn open(
+    format: Format,
+    file: PathBuf,
+    no_spread: bool,
+    measure: Option<usize>,
+    animate: bool,
+) -> Result<()> {
     let (bytes, name, book) = if file.as_os_str() == "-" {
         let mut buf = Vec::new();
-        std::io::stdin().read_to_end(&mut buf).context("reading stdin")?;
+        std::io::stdin()
+            .read_to_end(&mut buf)
+            .context("reading stdin")?;
         (buf, "stdin".to_string(), None)
     } else {
         let bytes = std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
@@ -109,5 +130,5 @@ fn open(format: Format, file: PathBuf, no_spread: bool, measure: Option<usize>) 
         (bytes, name, Some(book))
     };
     let doc = formats::load(format, bytes, &name)?;
-    app::run(doc, book, !no_spread, measure)
+    app::run(doc, book, !no_spread, measure, animate)
 }

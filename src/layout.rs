@@ -74,7 +74,9 @@ impl Layout {
     }
 
     pub fn page(&self, n: usize) -> &[Row] {
-        self.pages.get(n).map_or(&[], |p| &self.rows[p.start..p.end])
+        self.pages
+            .get(n)
+            .map_or(&[], |p| &self.rows[p.start..p.end])
     }
 
     /// Blank rows above the text of page `n`: the drop that opens a chapter.
@@ -84,8 +86,13 @@ impl Layout {
 
     /// The page that shows `pos`.
     pub fn page_of(&self, pos: Pos) -> usize {
-        let row = self.rows.partition_point(|r| r.pos <= pos).saturating_sub(1);
-        self.pages.partition_point(|p| p.start <= row).saturating_sub(1)
+        let row = self
+            .rows
+            .partition_point(|r| r.pos <= pos)
+            .saturating_sub(1);
+        self.pages
+            .partition_point(|p| p.start <= row)
+            .saturating_sub(1)
     }
 
     /// Where page `n` begins in the source.
@@ -165,7 +172,8 @@ fn width_of(c: char) -> usize {
 }
 
 /// Characters that may not open a row (kinsoku).
-const NO_START: &str = "、。，．・：；？！ー）」』】〕〉》’”…ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮ";
+const NO_START: &str =
+    "、。，．・：；？！ー）」』】〕〉》’”…ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮ";
 /// Characters that may not close a row.
 const NO_END: &str = "（「『【〔〈《‘“";
 
@@ -322,7 +330,11 @@ fn pieces(chars: &[char], width: usize, kind: Kind, hang: Option<usize>) -> Vec<
 /// with the continuation mark, so they are not read as lines of their own.
 fn pieces_hard(chars: &[char], width: usize) -> Vec<Piece> {
     // Too narrow to spare room for the mark: break without it.
-    let mark = if width > 2 * CARRY.width() { CARRY.width() } else { 0 };
+    let mark = if width > 2 * CARRY.width() {
+        CARRY.width()
+    } else {
+        0
+    };
     let mut out = Vec::new();
     let mut start = 0;
     let mut used = 0;
@@ -377,13 +389,25 @@ mod tests {
             bold: true,
             ..Style::default()
         };
-        line.runs.push(Run { start: 3, end: 8, style: bold });
+        line.runs.push(Run {
+            start: 3,
+            end: 8,
+            style: bold,
+        });
         let rows = set(0, &line, 5);
         let spans: Vec<Vec<(&str, bool)>> = rows
             .iter()
-            .map(|r| r.spans.iter().map(|s| (s.text.as_str(), s.style.bold)).collect())
+            .map(|r| {
+                r.spans
+                    .iter()
+                    .map(|s| (s.text.as_str(), s.style.bold))
+                    .collect()
+            })
             .collect();
-        assert_eq!(spans, [vec![("aa ", false), ("bb", true)], vec![("cc", true)]]);
+        assert_eq!(
+            spans,
+            [vec![("aa ", false), ("bb", true)], vec![("cc", true)]]
+        );
     }
 
     #[test]
@@ -392,7 +416,10 @@ mod tests {
         line.gutter = "┃ ".into();
         line.hang = Some(2);
         assert_eq!(
-            set(0, &line, 11).into_iter().map(|r| r.text).collect::<Vec<_>>(),
+            set(0, &line, 11)
+                .into_iter()
+                .map(|r| r.text)
+                .collect::<Vec<_>>(),
             ["┃ • one two", "┃   three"]
         );
     }
@@ -417,7 +444,10 @@ mod tests {
 
     #[test]
     fn keeps_hanging_indent() {
-        assert_eq!(rows("  - one two three", 9), ["  - one", "  two", "  three"]);
+        assert_eq!(
+            rows("  - one two three", 9),
+            ["  - one", "  two", "  three"]
+        );
     }
 
     #[test]
@@ -481,7 +511,11 @@ mod tests {
     fn chaptered(lines: &[(&str, Option<u8>)]) -> Document {
         let mut d = Document::default();
         for (i, (text, level)) in lines.iter().enumerate() {
-            let kind = if level.is_some() { Kind::Heading } else { Kind::Body };
+            let kind = if level.is_some() {
+                Kind::Heading
+            } else {
+                Kind::Body
+            };
             d.lines.push(Line::new(*text, kind));
             if let Some(level) = level {
                 d.chapters.push(crate::doc::Chapter {
@@ -514,7 +548,9 @@ mod tests {
             ("S2", Some(2)),
         ]);
         let l = Layout::new(&d, 10, 20);
-        let firsts: Vec<_> = (0..l.page_count()).map(|n| l.page(n)[0].text.as_str()).collect();
+        let firsts: Vec<_> = (0..l.page_count())
+            .map(|n| l.page(n)[0].text.as_str())
+            .collect();
         assert_eq!(firsts, ["T", "S1", "S2"]);
     }
 

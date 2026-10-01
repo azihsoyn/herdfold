@@ -30,7 +30,14 @@ impl RightPane {
             .unwrap_or_else(|| "herdr".into());
         let env = format!("{SOCKET_ENV}={}", socket.display());
         let out = Command::new(&herdr)
-            .args(["pane", "split", "--current", "--direction", "right", "--no-focus"])
+            .args([
+                "pane",
+                "split",
+                "--current",
+                "--direction",
+                "right",
+                "--no-focus",
+            ])
             .args(["--ratio", "0.5", "--env", &env])
             .output()
             .ok()

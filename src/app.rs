@@ -18,6 +18,7 @@ use crate::herdr::RightPane;
 use crate::layout::{Layout, Pos};
 use crate::marks::{self, Entry};
 use crate::server::{ConnId, Hub, Inbound, Server};
+use crate::turn::{Turn, Turning};
 use crate::view::{self, Cmd, PageRow, PageView, Side};
 
 struct Reader {
@@ -34,8 +35,14 @@ struct Reader {
     note: Option<String>,
     /// The connection drawing the right-hand page, and its size.
     attached: Option<(ConnId, u16, u16)>,
-    /// The last `page_shown` sent, so unchanged pages are not resent.
-    shown: Option<EventData>,
+    /// The pages last sent in `page_shown`, so unchanged pages are not resent.
+    shown: Option<(PageView, Option<PageView>)>,
+    /// Whether turns are drawn.
+    animate: bool,
+    /// The turn being drawn in this pane.
+    turning: Option<Turning>,
+    /// A turn not yet announced to other panes.
+    unsent_turn: Option<Turn>,
     /// Longest row, in columns.
     measure: usize,
 }
@@ -44,7 +51,13 @@ struct Reader {
 /// to a pane split off for it.
 /// `measure` (longest row) defaults to the one last set for this book, then
 /// to the one last set for any book, then to 72.
-pub fn run(doc: Document, book: Option<String>, spread: bool, measure: Option<usize>) -> Result<()> {
+pub fn run(
+    doc: Document,
+    book: Option<String>,
+    spread: bool,
+    measure: Option<usize>,
+    animate: bool,
+) -> Result<()> {
     let entry = book.as_deref().and_then(marks::load).unwrap_or_default();
     let measure = starting_measure(measure, entry.measure, marks::settings().measure);
     let mut reader = Reader {
@@ -58,6 +71,9 @@ pub fn run(doc: Document, book: Option<String>, spread: bool, measure: Option<us
         note: None,
         attached: None,
         shown: None,
+        animate,
+        turning: None,
+        unsent_turn: None,
         measure,
     };
     let server = if spread { Server::listen().ok() } else { None };
@@ -88,7 +104,9 @@ impl Reader {
             let deadline = Instant::now() + Duration::from_millis(1500);
             while self.attached.is_none() {
                 let left = deadline.saturating_duration_since(Instant::now());
-                let Ok(msg) = s.inbound.recv_timeout(left) else { break };
+                let Ok(msg) = s.inbound.recv_timeout(left) else {
+                    break;
+                };
                 self.answer(&s.hub, msg, &mut cmds);
             }
         }
@@ -99,24 +117,43 @@ impl Reader {
                 // Both pages are set to the smaller pane so they match.
                 size = (size.0.min(w), size.1.min(h));
             }
-            self.fit(view::text_size(size.0, size.1, self.measure), self.attached.is_some());
+            self.fit(
+                view::text_size(size.0, size.1, self.measure),
+                self.attached.is_some(),
+            );
 
             let (left, right) = self.views();
-            terminal.draw(|f| {
-                view::render(f, f.area(), Some(&left));
+            view::draw_whole(terminal, |f| {
+                let area = f.area();
+                let turned = self
+                    .turning
+                    .as_ref()
+                    .is_some_and(|t| t.render(f.buffer_mut(), area, Some(&left)));
+                if !turned {
+                    view::render(f.buffer_mut(), area, Some(&left));
+                }
                 if let Some(sel) = self.toc {
                     self.draw_contents(f, sel);
                 }
             })?;
-            let shown = EventData::PageShown { left, right };
+            if self.turning.as_ref().is_some_and(Turning::done) {
+                self.turning = None;
+            }
+            let pages = (left, right);
             if let Some(s) = server
-                && self.shown.as_ref() != Some(&shown)
+                && (self.unsent_turn.is_some() || self.shown.as_ref() != Some(&pages))
             {
-                s.hub.emit(shown.clone());
-                self.shown = Some(shown);
+                s.hub.emit(EventData::PageShown {
+                    left: pages.0.clone(),
+                    right: pages.1.clone(),
+                    turn: self.unsent_turn.take(),
+                });
+                self.shown = Some(pages);
             }
 
-            if event::poll(Duration::from_millis(30))?
+            // Draw a turn at about 60 frames a second; otherwise wait on keys.
+            let wait = if self.turning.is_some() { 16 } else { 30 };
+            if event::poll(Duration::from_millis(wait))?
                 && let Event::Key(k) = event::read()?
             {
                 cmds.extend(view::key_name(k).as_deref().and_then(view::cmd_of));
@@ -193,7 +230,12 @@ impl Reader {
             .doc
             .chapters
             .iter()
-            .map(|c| self.layout.page_of(Pos { line: c.line, offset: 0 }))
+            .map(|c| {
+                self.layout.page_of(Pos {
+                    line: c.line,
+                    offset: 0,
+                })
+            })
             .collect();
     }
 
@@ -237,7 +279,11 @@ impl Reader {
                 .collect(),
             number: n + 1,
             total: self.layout.page_count(),
-            marked: self.entry.marks.iter().any(|&m| self.layout.page_of(m) == n),
+            marked: self
+                .entry
+                .marks
+                .iter()
+                .any(|&m| self.layout.page_of(m) == n),
             width: self.layout.width,
             note: (side != Side::Right).then(|| self.note.clone()).flatten(),
         }
@@ -268,10 +314,14 @@ impl Reader {
         match cmd {
             Cmd::Next => {
                 if page + self.step() < self.layout.page_count() {
-                    self.go(page + self.step());
+                    self.turn_to(page + self.step(), Turn::Forward);
                 }
             }
-            Cmd::Prev => self.go(page.saturating_sub(self.step())),
+            Cmd::Prev => {
+                if page > 0 {
+                    self.turn_to(page.saturating_sub(self.step()), Turn::Backward);
+                }
+            }
             Cmd::Mark => self.toggle_mark(page),
             // Step from the rows as set, which the pane may hold shorter than the measure.
             Cmd::Wider if self.layout.width < self.measure => {
@@ -295,6 +345,20 @@ impl Reader {
             Cmd::Up | Cmd::Down | Cmd::Enter => {}
         }
         false
+    }
+
+    /// Goes to `page` by turning to it, which panes draw when animating.
+    fn turn_to(&mut self, page: usize, turn: Turn) {
+        if self.animate {
+            let side = if self.spread {
+                Side::Left
+            } else {
+                Side::Single
+            };
+            self.turning = Some(Turning::new(turn, Some(self.views().0), side));
+            self.unsent_turn = Some(turn);
+        }
+        self.go(page);
     }
 
     fn go(&mut self, page: usize) {
@@ -324,7 +388,9 @@ impl Reader {
         let open = page..page + self.step();
         let before = self.entry.marks.len();
         let layout = &self.layout;
-        self.entry.marks.retain(|&m| !open.contains(&layout.page_of(m)));
+        self.entry
+            .marks
+            .retain(|&m| !open.contains(&layout.page_of(m)));
         if self.entry.marks.len() == before {
             self.entry.marks.push(self.layout.start_of(page));
             self.entry.marks.sort();
@@ -348,11 +414,22 @@ impl Reader {
         let top = self.doc.chapters.iter().map(|c| c.level).min().unwrap_or(1);
         let chapters = self.doc.chapters.iter().map(|c| {
             let indent = "  ".repeat((c.level - top) as usize);
-            (format!("{indent}{}", c.title), Pos { line: c.line, offset: 0 })
+            (
+                format!("{indent}{}", c.title),
+                Pos {
+                    line: c.line,
+                    offset: 0,
+                },
+            )
         });
         let marks = self.entry.marks.iter().map(|&m| {
             let p = self.layout.page_of(m);
-            let first = self.layout.page(p).first().map(|r| r.text.trim()).unwrap_or("");
+            let first = self
+                .layout
+                .page(p)
+                .first()
+                .map(|r| r.text.trim())
+                .unwrap_or("");
             (format!("▍ {first}"), m)
         });
         chapters.chain(marks).collect()
@@ -363,8 +440,12 @@ impl Reader {
         let area = f.area();
         let width = area.width.saturating_sub(4).min(64);
         let height = area.height.saturating_sub(4).min(entries.len() as u16 + 2);
-        let [row] = Split::vertical([Constraint::Length(height)]).flex(Flex::Center).areas(area);
-        let [popup] = Split::horizontal([Constraint::Length(width)]).flex(Flex::Center).areas(row);
+        let [row] = Split::vertical([Constraint::Length(height)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [popup] = Split::horizontal([Constraint::Length(width)])
+            .flex(Flex::Center)
+            .areas(row);
         let inner = width.saturating_sub(4) as usize;
         let dim = Style::new().add_modifier(Modifier::DIM);
         let items: Vec<ListItem> = entries

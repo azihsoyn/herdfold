@@ -34,7 +34,11 @@ mod tests {
     #[test]
     fn each_file_is_a_chapter() {
         let d = load("diff --git a/x.rs b/x.rs\n+1\ndiff --git a/y z.rs b/y z.rs\n-2\n");
-        let ch: Vec<_> = d.chapters.iter().map(|c| (c.title.as_str(), c.line)).collect();
+        let ch: Vec<_> = d
+            .chapters
+            .iter()
+            .map(|c| (c.title.as_str(), c.line))
+            .collect();
         assert_eq!(ch, [("x.rs", 0), ("y z.rs", 2)]);
     }
 }

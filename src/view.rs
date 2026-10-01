@@ -4,16 +4,14 @@
 //! without the document.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Widget};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
-use ratatui::style::Color;
 
 use crate::doc::{Style as TextStyle, Styled};
 
@@ -128,13 +126,27 @@ pub fn cmd_of(key: &str) -> Option<Cmd> {
     })
 }
 
+/// Draws one frame inside a synchronized update, so the terminal (and herdr)
+/// shows it whole rather than row by row; a turn is many frames in a row.
+pub fn draw_whole(
+    terminal: &mut ratatui::DefaultTerminal,
+    render: impl FnOnce(&mut ratatui::Frame),
+) -> std::io::Result<()> {
+    use crossterm::execute;
+    use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+    execute!(std::io::stdout(), BeginSynchronizedUpdate)?;
+    let drawn = terminal.draw(render).map(|_| ());
+    execute!(std::io::stdout(), EndSynchronizedUpdate)?;
+    drawn
+}
+
 /// The left edge and width of the text column in `area`.
 pub fn column(area: Rect, width: usize) -> (u16, u16) {
     let w = (width as u16).min(area.width);
     (area.x + (area.width - w) / 2, w)
 }
 
-pub fn render(f: &mut Frame, area: Rect, view: Option<&PageView>) {
+pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
     let Some(v) = view else { return };
     if area.height < TOP + BOTTOM || area.width < 4 {
         return;
@@ -152,12 +164,18 @@ pub fn render(f: &mut Frame, area: Rect, view: Option<&PageView>) {
     let head = fit(head, room);
     let gap = " ".repeat((w as usize).saturating_sub(head.width() + ribbon.width()));
     let line = match v.side {
-        Side::Right => Line::from(vec![Span::raw(ribbon), Span::raw(gap), Span::styled(head, style)]),
-        Side::Left | Side::Single => {
-            Line::from(vec![Span::styled(head, style), Span::raw(gap), Span::raw(ribbon)])
-        }
+        Side::Right => Line::from(vec![
+            Span::raw(ribbon),
+            Span::raw(gap),
+            Span::styled(head, style),
+        ]),
+        Side::Left | Side::Single => Line::from(vec![
+            Span::styled(head, style),
+            Span::raw(gap),
+            Span::raw(ribbon),
+        ]),
     };
-    f.render_widget(Paragraph::new(line), Rect::new(x, area.y + 1, w, 1));
+    Paragraph::new(line).render(Rect::new(x, area.y + 1, w, 1), buf);
 
     let text_h = area.height - TOP - BOTTOM;
     let lines: Vec<Line> = v
@@ -173,10 +191,10 @@ pub fn render(f: &mut Frame, area: Rect, view: Option<&PageView>) {
             )
         })
         .collect();
-    f.render_widget(Paragraph::new(lines), Rect::new(x, area.y + TOP, w, text_h));
+    Paragraph::new(lines).render(Rect::new(x, area.y + TOP, w, text_h), buf);
 
     let footer = footer(v, w as usize);
-    f.render_widget(Paragraph::new(footer), Rect::new(x, area.y + area.height - 2, w, 1));
+    Paragraph::new(footer).render(Rect::new(x, area.y + area.height - 2, w, 1), buf);
 }
 
 fn style_of(t: TextStyle) -> Style {
@@ -252,8 +270,14 @@ mod tests {
     #[test]
     fn keys_travel_by_herdr_names() {
         let press = |code, modifiers| key_name(KeyEvent::new(code, modifiers));
-        assert_eq!(press(KeyCode::Char(' '), KeyModifiers::NONE).as_deref(), Some("space"));
-        assert_eq!(press(KeyCode::Char('c'), KeyModifiers::CONTROL).as_deref(), Some("ctrl+c"));
+        assert_eq!(
+            press(KeyCode::Char(' '), KeyModifiers::NONE).as_deref(),
+            Some("space")
+        );
+        assert_eq!(
+            press(KeyCode::Char('c'), KeyModifiers::CONTROL).as_deref(),
+            Some("ctrl+c")
+        );
         assert_eq!(cmd_of("space"), Some(Cmd::Next));
         assert_eq!(cmd_of("ctrl+c"), Some(Cmd::Quit));
         assert_eq!(cmd_of("x"), None);

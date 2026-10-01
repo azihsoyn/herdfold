@@ -32,7 +32,11 @@ pub fn load(bytes: Vec<u8>) -> Result<Document> {
 
     let items: HashMap<&str, Item> = opf
         .find("manifest")
-        .map(|m| m.elements().filter(|e| e.name == "item").collect::<Vec<_>>())
+        .map(|m| {
+            m.elements()
+                .filter(|e| e.name == "item")
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default()
         .into_iter()
         .filter_map(|e| {
@@ -79,10 +83,11 @@ pub fn load(bytes: Vec<u8>) -> Result<Document> {
         .map(|(i, src)| nav_entries(&xml::parse(&src), dir_of(&i.href)))
         .filter(|t| !t.is_empty())
         .or_else(|| {
-            let ncx = spine
-                .attr("toc")
-                .and_then(|id| items.get(id))
-                .or_else(|| items.values().find(|i| i.media == "application/x-dtbncx+xml"))?;
+            let ncx = spine.attr("toc").and_then(|id| items.get(id)).or_else(|| {
+                items
+                    .values()
+                    .find(|i| i.media == "application/x-dtbncx+xml")
+            })?;
             let src = read(&mut zip, &ncx.href).ok()?;
             Some(ncx_entries(&xml::parse(&src), dir_of(&ncx.href)))
         })
@@ -110,7 +115,9 @@ pub fn load(bytes: Vec<u8>) -> Result<Document> {
 }
 
 fn read(zip: &mut Zip, name: &str) -> Result<String> {
-    let mut f = zip.by_name(name).with_context(|| format!("{name} is missing from the EPUB"))?;
+    let mut f = zip
+        .by_name(name)
+        .with_context(|| format!("{name} is missing from the EPUB"))?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf)?;
     Ok(String::from_utf8_lossy(&buf).into_owned())
@@ -146,7 +153,9 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'%'
-            && let Some(v) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
+            && let Some(v) = s
+                .get(i + 1..i + 3)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
         {
             out.push(v);
             i += 3;
@@ -161,10 +170,17 @@ fn percent_decode(s: &str) -> String {
 type Entry = (u8, String, String);
 
 fn nav_entries(root: &Element, dir: &str) -> Vec<Entry> {
-    let navs: Vec<&Element> = root.descendants().into_iter().filter(|e| e.name == "nav").collect();
+    let navs: Vec<&Element> = root
+        .descendants()
+        .into_iter()
+        .filter(|e| e.name == "nav")
+        .collect();
     let nav = navs
         .iter()
-        .find(|n| n.attr("type").is_some_and(|t| t.split_whitespace().any(|t| t == "toc")))
+        .find(|n| {
+            n.attr("type")
+                .is_some_and(|t| t.split_whitespace().any(|t| t == "toc"))
+        })
         .or(navs.first());
     let mut out = Vec::new();
     if let Some(ol) = nav.and_then(|n| n.find("ol")) {
@@ -196,8 +212,14 @@ fn ncx_entries(root: &Element, dir: &str) -> Vec<Entry> {
 
 fn ncx_points(parent: &Element, level: u8, dir: &str, out: &mut Vec<Entry>) {
     for p in parent.elements().filter(|e| e.name == "navpoint") {
-        let label = p.elements().find(|e| e.name == "navlabel").map(|e| e.text());
-        let src = p.elements().find(|e| e.name == "content").and_then(|e| e.attr("src"));
+        let label = p
+            .elements()
+            .find(|e| e.name == "navlabel")
+            .map(|e| e.text());
+        let src = p
+            .elements()
+            .find(|e| e.name == "content")
+            .and_then(|e| e.attr("src"));
         if let (Some(label), Some(src)) = (label, src) {
             out.push((level, label, resolve(dir, src)));
         }
@@ -206,13 +228,51 @@ fn ncx_points(parent: &Element, level: u8, dir: &str, out: &mut Vec<Entry>) {
 }
 
 const BLOCK: &[&str] = &[
-    "address", "article", "aside", "blockquote", "body", "dd", "div", "dl", "dt", "figcaption",
-    "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "li", "main", "nav", "ol",
-    "p", "pre", "section", "table", "tr", "ul",
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "body",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "figcaption",
+    "figure",
+    "footer",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "li",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "tr",
+    "ul",
 ];
 /// Blocks followed by a blank line.
 const PARAGRAPH: &[&str] = &[
-    "blockquote", "dl", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "ol", "p", "pre", "table",
+    "blockquote",
+    "dl",
+    "figure",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "ol",
+    "p",
+    "pre",
+    "table",
     "ul",
 ];
 
@@ -255,7 +315,11 @@ impl<'a> Html<'a> {
             }
             "img" | "image" => {
                 let alt = e.attr("alt").unwrap_or("").trim();
-                let s = if alt.is_empty() { "[image]".to_string() } else { format!("[image: {alt}]") };
+                let s = if alt.is_empty() {
+                    "[image]".to_string()
+                } else {
+                    format!("[image: {alt}]")
+                };
                 return self.text(&s);
             }
             "td" | "th" => self.text(" "),
@@ -394,7 +458,10 @@ mod tests {
 
     #[test]
     fn resolves_relative_paths() {
-        assert_eq!(resolve("OEBPS/text", "../img/a%20b.png"), "OEBPS/img/a b.png");
+        assert_eq!(
+            resolve("OEBPS/text", "../img/a%20b.png"),
+            "OEBPS/img/a b.png"
+        );
         assert_eq!(resolve("", "ch1.xhtml"), "ch1.xhtml");
     }
 }

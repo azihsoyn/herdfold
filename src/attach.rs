@@ -16,7 +16,8 @@ use crate::api::{
     ReaderSizeParams, Request, ResponseResult, SOCKET_ENV, Subscription,
 };
 use crate::cli::CliError;
-use crate::view::{self, PageView};
+use crate::turn::Turning;
+use crate::view::{self, PageView, Side};
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -62,7 +63,8 @@ impl Client {
             id: id.clone(),
             call,
         };
-        let line = serde_json::to_string(&req).map_err(|e| CliError::new("internal", e.to_string()))?;
+        let line =
+            serde_json::to_string(&req).map_err(|e| CliError::new("internal", e.to_string()))?;
         writeln!(self.writer, "{line}").map_err(CliError::io)?;
         Ok(id)
     }
@@ -114,15 +116,29 @@ pub fn run() -> Result<(), CliError> {
 
 fn draw(terminal: &mut ratatui::DefaultTerminal, client: &mut Client) -> Result<(), CliError> {
     let mut page: Option<PageView> = None;
+    let mut turning: Option<Turning> = None;
     loop {
-        terminal
-            .draw(|f| view::render(f, f.area(), page.as_ref()))
-            .map_err(CliError::io)?;
-        if event::poll(Duration::from_millis(30)).map_err(CliError::io)? {
+        view::draw_whole(terminal, |f| {
+            let area = f.area();
+            let turned = turning
+                .as_ref()
+                .is_some_and(|t| t.render(f.buffer_mut(), area, page.as_ref()));
+            if !turned {
+                view::render(f.buffer_mut(), area, page.as_ref());
+            }
+        })
+        .map_err(CliError::io)?;
+        if turning.as_ref().is_some_and(Turning::done) {
+            turning = None;
+        }
+        let wait = if turning.is_some() { 16 } else { 30 };
+        if event::poll(Duration::from_millis(wait)).map_err(CliError::io)? {
             match event::read().map_err(CliError::io)? {
                 Event::Key(k) => {
                     if let Some(key) = view::key_name(k) {
-                        client.send(Call::ReaderSendKeys(ReaderSendKeysParams { keys: vec![key] }))?;
+                        client.send(Call::ReaderSendKeys(ReaderSendKeysParams {
+                            keys: vec![key],
+                        }))?;
                     }
                 }
                 Event::Resize(cols, rows) => {
@@ -134,7 +150,11 @@ fn draw(terminal: &mut ratatui::DefaultTerminal, client: &mut Client) -> Result<
         loop {
             match client.incoming.try_recv() {
                 Ok(Incoming::Event(e)) => match e.data {
-                    EventData::PageShown { right, .. } => page = right,
+                    EventData::PageShown { right, turn, .. } => {
+                        // This pane always holds the right-hand page.
+                        turning = turn.map(|t| Turning::new(t, page.take(), Side::Right));
+                        page = right;
+                    }
                     EventData::ReaderClosed => return Ok(()),
                 },
                 Ok(_) => {}

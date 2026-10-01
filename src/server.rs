@@ -18,8 +18,7 @@ use serde::Serialize;
 
 use crate::NAME;
 use crate::api::{
-    ErrorResponse, EventData, EventEnvelope, Request, ResponseResult, SuccessResponse,
-    Subscription,
+    ErrorResponse, EventData, EventEnvelope, Request, ResponseResult, Subscription, SuccessResponse,
 };
 
 pub type ConnId = u64;
@@ -64,7 +63,9 @@ impl Hub {
     pub fn emit(&self, data: EventData) {
         let event = EventEnvelope::new(data);
         let kind = event.subscription();
-        let Ok(line) = serde_json::to_string(&event) else { return };
+        let Ok(line) = serde_json::to_string(&event) else {
+            return;
+        };
         for c in self.conns.lock().unwrap().values_mut() {
             if c.subscriptions.contains(&kind) {
                 let _ = writeln!(c.writer, "{line}");
@@ -73,7 +74,9 @@ impl Hub {
     }
 
     fn send(&self, conn: ConnId, msg: &impl Serialize) {
-        let Ok(line) = serde_json::to_string(msg) else { return };
+        let Ok(line) = serde_json::to_string(msg) else {
+            return;
+        };
         if let Some(c) = self.conns.lock().unwrap().get_mut(&conn) {
             let _ = writeln!(c.writer, "{line}");
         }
@@ -113,7 +116,9 @@ impl Drop for Server {
 }
 
 fn serve(id: ConnId, stream: UnixStream, hub: Hub, tx: Sender<Inbound>) {
-    let Ok(writer) = stream.try_clone() else { return };
+    let Ok(writer) = stream.try_clone() else {
+        return;
+    };
     hub.conns.lock().unwrap().insert(
         id,
         Conn {
@@ -134,7 +139,12 @@ fn serve(id: ConnId, stream: UnixStream, hub: Hub, tx: Sender<Inbound>) {
                     }
                 }
                 // Like herdr: a request that cannot be read is answered with an empty id.
-                Err(e) => hub.fail(id, String::new(), "invalid_request", format!("invalid request: {e}")),
+                Err(e) => hub.fail(
+                    id,
+                    String::new(),
+                    "invalid_request",
+                    format!("invalid request: {e}"),
+                ),
             }
         }
         // The connection is forgotten only once the reader has answered

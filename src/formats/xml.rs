@@ -2,8 +2,8 @@
 //! table of contents and XHTML. Malformed input yields whatever was parsed
 //! before the error rather than nothing.
 
-use quick_xml::{Reader, XmlVersion};
 use quick_xml::events::{BytesStart, Event};
+use quick_xml::{Reader, XmlVersion};
 
 #[derive(Debug, Default)]
 pub struct Element {

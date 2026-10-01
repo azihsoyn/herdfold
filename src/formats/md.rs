@@ -9,7 +9,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::doc::{Chapter, Document, Kind, Line, Run, Style};
 
 pub fn load(src: &str) -> Document {
-    let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut r = Renderer::default();
     for event in Parser::new_ext(src, options) {
         r.event(event);
@@ -282,7 +283,11 @@ impl Renderer {
         if self.text.is_empty() {
             return;
         }
-        let kind = if self.heading { Kind::Heading } else { Kind::Body };
+        let kind = if self.heading {
+            Kind::Heading
+        } else {
+            Kind::Body
+        };
         let mut line = Line::new(std::mem::take(&mut self.text), kind);
         line.style = std::mem::take(&mut self.base);
         line.runs = std::mem::take(&mut self.runs);
@@ -399,7 +404,11 @@ mod tests {
                 ("Small", Kind::Heading),
             ]
         );
-        let ch: Vec<_> = d.chapters.iter().map(|c| (c.level, c.title.as_str(), c.line)).collect();
+        let ch: Vec<_> = d
+            .chapters
+            .iter()
+            .map(|c| (c.level, c.title.as_str(), c.line))
+            .collect();
         assert_eq!(ch, [(1, "Top", 0), (2, "Sub", 5), (3, "Small", 8)]);
         assert_eq!(d.title, "Top");
     }
@@ -454,7 +463,11 @@ mod tests {
     #[test]
     fn quotes_carry_a_bar() {
         let d = load("> said\n> so\n\nafter");
-        let lines: Vec<_> = d.lines.iter().map(|l| (l.gutter.as_str(), l.text.as_str())).collect();
+        let lines: Vec<_> = d
+            .lines
+            .iter()
+            .map(|l| (l.gutter.as_str(), l.text.as_str()))
+            .collect();
         assert_eq!(lines, [("┃ ", "said so"), ("", ""), ("", "after")]);
     }
 

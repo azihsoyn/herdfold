@@ -66,7 +66,8 @@ pub fn settings() -> Settings {
 }
 
 pub fn save_settings(settings: &Settings) -> Result<()> {
-    let path = data_file("settings.json").context("no HOME or XDG_DATA_HOME to keep settings in")?;
+    let path =
+        data_file("settings.json").context("no HOME or XDG_DATA_HOME to keep settings in")?;
     write_json(&path, settings)
 }
 

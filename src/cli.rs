@@ -42,11 +42,15 @@ pub fn finish(id: &str, result: Result<(), CliError>) -> ExitCode {
 pub fn api_schema(json: bool, output: Option<PathBuf>) -> Result<(), CliError> {
     let schema = api::schema();
     if let Some(path) = output {
-        let text = serde_json::to_string_pretty(&schema).map_err(|e| CliError::new("internal", e.to_string()))?;
+        let text = serde_json::to_string_pretty(&schema)
+            .map_err(|e| CliError::new("internal", e.to_string()))?;
         std::fs::write(&path, text + "\n").map_err(CliError::io)?;
         println!("wrote API schema to {}", path.display());
     } else if json {
-        println!("{}", serde_json::to_string_pretty(&schema).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&schema).unwrap_or_default()
+        );
     } else {
         let names: Vec<&String> = schema["schemas"]
             .as_object()

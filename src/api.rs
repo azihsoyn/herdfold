@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::turn::Turn;
 use crate::view::PageView;
 
 pub const PROTOCOL: u32 = 1;
@@ -133,6 +134,10 @@ pub enum EventData {
     PageShown {
         left: PageView,
         right: Option<PageView>,
+        /// Set when the pages were turned to (rather than jumped to), so
+        /// panes can draw the turn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn: Option<Turn>,
     },
     ReaderClosed,
 }
@@ -200,7 +205,8 @@ mod tests {
             serde_json::to_value(&r).unwrap(),
             json!({"id":"1","method":"reader.send_keys","params":{"keys":["space"]}})
         );
-        let ping: Request = serde_json::from_str(r#"{"id":"p","method":"ping","params":{}}"#).unwrap();
+        let ping: Request =
+            serde_json::from_str(r#"{"id":"p","method":"ping","params":{}}"#).unwrap();
         assert_eq!(ping.call, Call::Ping(EmptyParams {}));
     }
 
