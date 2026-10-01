@@ -13,7 +13,7 @@ use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
 use crate::api::{Call, EventData, PROTOCOL, Request, ResponseResult};
-use crate::doc::Document;
+use crate::doc::{Document, Kind};
 use crate::herdr::RightPane;
 use crate::layout::{Layout, Pos};
 use crate::marks::{self, Entry};
@@ -214,15 +214,18 @@ impl Reader {
         PageView {
             side,
             head,
-            rows: self
-                .layout
-                .page(n)
-                .iter()
-                .map(|r| PageRow {
-                    text: r.text.clone(),
-                    kind: r.kind,
-                })
-                .collect(),
+            rows: std::iter::repeat_n(
+                PageRow {
+                    text: String::new(),
+                    kind: Kind::Body,
+                },
+                self.layout.pad(n),
+            )
+            .chain(self.layout.page(n).iter().map(|r| PageRow {
+                text: r.text.clone(),
+                kind: r.kind,
+            }))
+            .collect(),
             number: n + 1,
             total: self.layout.page_count(),
             marked: self.entry.marks.iter().any(|&m| self.layout.page_of(m) == n),

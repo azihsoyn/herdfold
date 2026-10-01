@@ -1,6 +1,8 @@
 //! Breaking a document into rows of a fixed width, and rows into pages of a
-//! fixed height. Purely mechanical: where a page ends depends only on the
-//! size of the page, never on what the text says.
+//! fixed height. Mechanical: where a page ends depends on the size of the
+//! page and on the chapters the input declared, never on what the text says.
+
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthChar;
@@ -27,8 +29,14 @@ pub struct Layout {
     pub width: usize,
     pub height: usize,
     rows: Vec<Row>,
-    /// Index into `rows` of the first row of each page.
-    starts: Vec<usize>,
+    pages: Vec<Span>,
+}
+
+/// One page: `rows[start..end]`, set `pad` blank rows down from the top.
+struct Span {
+    start: usize,
+    end: usize,
+    pad: usize,
 }
 
 impl Layout {
@@ -52,64 +60,99 @@ impl Layout {
                 kind: Kind::Body,
             });
         }
-        let starts = paginate(&rows, height);
+        let pages = paginate(&rows, height, &chapter_breaks(doc));
         Self {
             width,
             height,
             rows,
-            starts,
+            pages,
         }
     }
 
     pub fn page_count(&self) -> usize {
-        self.starts.len()
+        self.pages.len()
     }
 
     pub fn page(&self, n: usize) -> &[Row] {
-        let Some(&start) = self.starts.get(n) else {
-            return &[];
-        };
-        let end = self
-            .starts
-            .get(n + 1)
-            .copied()
-            .unwrap_or(self.rows.len())
-            .min(start + self.height);
-        &self.rows[start..end]
+        self.pages.get(n).map_or(&[], |p| &self.rows[p.start..p.end])
+    }
+
+    /// Blank rows above the text of page `n`: the drop that opens a chapter.
+    pub fn pad(&self, n: usize) -> usize {
+        self.pages.get(n).map_or(0, |p| p.pad)
     }
 
     /// The page that shows `pos`.
     pub fn page_of(&self, pos: Pos) -> usize {
         let row = self.rows.partition_point(|r| r.pos <= pos).saturating_sub(1);
-        self.starts.partition_point(|&s| s <= row).saturating_sub(1)
+        self.pages.partition_point(|p| p.start <= row).saturating_sub(1)
     }
 
     /// Where page `n` begins in the source.
     pub fn start_of(&self, n: usize) -> Pos {
-        let n = n.min(self.starts.len() - 1);
-        self.rows[self.starts[n]].pos
+        let n = n.min(self.pages.len() - 1);
+        self.rows[self.pages[n].start].pos
     }
 }
 
-/// Rows are cut into pages of `height`; a page never opens on blank rows.
-fn paginate(rows: &[Row], height: usize) -> Vec<usize> {
-    let mut starts = Vec::new();
+/// Lines that open a chapter and so begin a new page. Only the top tier
+/// counts: the shallowest level the input uses more than once (a lone `#`
+/// title over many `##` sections makes the sections the chapters).
+fn chapter_breaks(doc: &Document) -> HashSet<usize> {
+    let mut counts = BTreeMap::new();
+    for c in &doc.chapters {
+        *counts.entry(c.level).or_insert(0) += 1;
+    }
+    let tier = counts
+        .iter()
+        .find(|&(_, &n)| n > 1)
+        .or(counts.iter().next())
+        .map_or(0, |(&level, _)| level);
+    doc.chapters
+        .iter()
+        .filter(|c| c.level <= tier)
+        .map(|c| c.line)
+        .collect()
+}
+
+/// Rows are cut into pages of `height`. A page never opens on blank rows,
+/// a chapter always opens a page (set a quarter of the way down, as a book
+/// sets its chapter openings), and a heading is never left as a page's last
+/// row, cut off from what it heads.
+fn paginate(rows: &[Row], height: usize, breaks: &HashSet<usize>) -> Vec<Span> {
+    let opens = |r: &Row| r.pos.offset == 0 && breaks.contains(&r.pos.line);
+    let drop = if height >= 12 { height / 4 } else { 0 };
+    let mut pages = Vec::new();
     let mut i = 0;
     while i < rows.len() {
-        let first = i;
         while i < rows.len() && rows[i].text.trim().is_empty() {
             i += 1;
         }
         if i == rows.len() {
-            if starts.is_empty() {
-                starts.push(first);
-            }
             break;
         }
-        starts.push(i);
-        i += height;
+        let pad = if opens(&rows[i]) { drop } else { 0 };
+        let room = height - pad;
+        let mut end = i + 1;
+        while end < rows.len() && end - i < room && !opens(&rows[end]) {
+            end += 1;
+        }
+        let full = end - i == room && end < rows.len();
+        let last = &rows[end - 1];
+        if full && end - i > 1 && last.kind == Kind::Heading && last.pos.offset == 0 {
+            end -= 1;
+        }
+        pages.push(Span { start: i, end, pad });
+        i = end;
     }
-    starts
+    if pages.is_empty() {
+        pages.push(Span {
+            start: 0,
+            end: rows.len(),
+            pad: 0,
+        });
+    }
+    pages
 }
 
 fn width_of(c: char) -> usize {
@@ -290,6 +333,55 @@ mod tests {
         assert_eq!(at, Pos { line: 1, offset: 0 });
         let narrow = Layout::new(&d, 5, 1);
         assert_eq!(narrow.page(narrow.page_of(at))[0].text, "ee ff");
+    }
+
+    fn chaptered(lines: &[(&str, Option<u8>)]) -> Document {
+        let mut d = Document::default();
+        for (i, (text, level)) in lines.iter().enumerate() {
+            let kind = if level.is_some() { Kind::Heading } else { Kind::Body };
+            d.lines.push(Line::new(*text, kind));
+            if let Some(level) = level {
+                d.chapters.push(crate::doc::Chapter {
+                    title: text.to_string(),
+                    level: *level,
+                    line: i,
+                });
+            }
+        }
+        d
+    }
+
+    #[test]
+    fn a_chapter_opens_a_new_page_set_down() {
+        let d = chaptered(&[("A", Some(1)), ("a", None), ("B", Some(1)), ("b", None)]);
+        let l = Layout::new(&d, 10, 12);
+        assert_eq!(l.page_count(), 2);
+        assert_eq!(l.page(1)[0].text, "B");
+        assert_eq!((l.pad(0), l.pad(1)), (3, 3));
+    }
+
+    #[test]
+    fn only_the_top_repeated_tier_breaks_pages() {
+        // One title over two sections: the sections are the chapters, and
+        // the sub-section stays on its section's page.
+        let d = chaptered(&[
+            ("T", Some(1)),
+            ("S1", Some(2)),
+            ("s", Some(3)),
+            ("S2", Some(2)),
+        ]);
+        let l = Layout::new(&d, 10, 20);
+        let firsts: Vec<_> = (0..l.page_count()).map(|n| l.page(n)[0].text.as_str()).collect();
+        assert_eq!(firsts, ["T", "S1", "S2"]);
+    }
+
+    #[test]
+    fn a_heading_is_not_left_at_the_foot_of_a_page() {
+        let mut d = doc(&["1", "2", "H", "3"]);
+        d.lines[2].kind = Kind::Heading;
+        let l = Layout::new(&d, 10, 3);
+        assert_eq!(l.page(0).len(), 2);
+        assert_eq!(l.page(1)[0].text, "H");
     }
 
     #[test]

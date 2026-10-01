@@ -1,18 +1,20 @@
 use crate::doc::{Chapter, Document, Kind, Line};
 
 /// A diff is kept exactly as written. The only structure taken from it is
-/// where one file's changes begin.
+/// where one file's changes begin; that header line is drawn as a heading.
 pub fn load(src: &str) -> Document {
     let mut doc = Document::default();
     for (i, l) in src.lines().enumerate() {
+        let mut kind = Kind::Pre;
         if let Some(rest) = l.strip_prefix("diff --git ") {
             doc.chapters.push(Chapter {
                 title: file_name(rest),
                 level: 1,
                 line: i,
             });
+            kind = Kind::Heading;
         }
-        doc.lines.push(Line::new(l, Kind::Pre));
+        doc.lines.push(Line::new(l, kind));
     }
     doc
 }
