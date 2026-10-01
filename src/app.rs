@@ -10,7 +10,7 @@ use crossterm::event::{self, Event};
 use ratatui::layout::{Constraint, Flex, Layout as Split, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
@@ -1027,6 +1027,10 @@ impl Reader {
     }
 
     fn draw_overlay(&self, f: &mut Frame) {
+        if !matches!(self.mode, Mode::Reading | Mode::Select(_)) {
+            let area = f.area();
+            view::backdrop(f.buffer_mut(), area);
+        }
         match &self.mode {
             Mode::Reading | Mode::Select(_) => {}
             Mode::Help => draw_help(f),
@@ -1046,7 +1050,7 @@ impl Reader {
                         (format!("{indent}{}", c.title), at, None)
                     })
                     .collect();
-                self.draw_list(f, " Contents ", &entries, *sel);
+                self.draw_list(f, "Contents", "Enter go · Esc close", &entries, *sel);
             }
             Mode::Shelf(sel) => {
                 let entries: Vec<(String, Pos, Option<Ribbon>)> = self
@@ -1056,7 +1060,8 @@ impl Reader {
                     .collect();
                 self.draw_list(
                     f,
-                    " Bookmarks and notes — Enter to go, d to remove ",
+                    "Bookmarks and notes",
+                    "Enter go · d remove · Esc close",
                     &entries,
                     *sel,
                 );
@@ -1069,10 +1074,10 @@ impl Reader {
             } => {
                 let page = self.layout.page_of(*at) + 1;
                 let title = match (anchor, ask) {
-                    (Anchor::Page, false) => format!(" Note on p.{page} "),
-                    (Anchor::Line, false) => " Note on this row ".to_string(),
-                    (Anchor::Page, true) => format!(" Ask the agent about p.{page} "),
-                    (Anchor::Line, true) => " Ask the agent about this row ".to_string(),
+                    (Anchor::Page, false) => format!("Note on p.{page}"),
+                    (Anchor::Line, false) => "Note on this row".to_string(),
+                    (Anchor::Page, true) => format!("Ask the agent about p.{page}"),
+                    (Anchor::Line, true) => "Ask the agent about this row".to_string(),
                 };
                 draw_input(f, &title, text);
             }
@@ -1083,6 +1088,7 @@ impl Reader {
         &self,
         f: &mut Frame,
         title: &str,
+        hint: &str,
         entries: &[(String, Pos, Option<Ribbon>)],
         sel: usize,
     ) {
@@ -1121,8 +1127,12 @@ impl Reader {
             })
             .collect();
         let list = List::new(items)
-            .block(Block::bordered().title(title.to_string()))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+            .block(view::panel(title, hint))
+            .highlight_style(
+                Style::new()
+                    .bg(ratatui::style::Color::Cyan)
+                    .fg(ratatui::style::Color::Black),
+            );
         let mut state = ListState::default().with_selected(Some(sel));
         f.render_widget(Clear, popup);
         f.render_stateful_widget(list, popup, &mut state);
@@ -1191,45 +1201,70 @@ fn draw_help(f: &mut Frame) {
     let [popup] = Split::horizontal([Constraint::Length(width)])
         .flex(Flex::Center)
         .areas(row);
-    let bold = Style::new().add_modifier(Modifier::BOLD);
     let lines: Vec<Line> = KEYS
         .iter()
         .map(|(k, what)| {
             Line::from(vec![
-                Span::styled(format!(" {k:<9}"), bold),
+                Span::styled(format!(" {k:<9}"), view::key_style()),
                 Span::raw(*what),
             ])
         })
         .collect();
-    let block = Block::bordered()
-        .title(" Keys ")
-        .title_bottom(" any key to close ");
+    let block = view::panel("Keys", "any key to close");
     f.render_widget(Clear, popup);
     f.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
 /// Tips, one shown each time a book opens.
+/// Keys are set off in backticks.
 const TIPS: &[&str] = &[
-    "h lists every key, any time.",
-    "m hangs a ribbon on the page as a bookmark; c changes its colour.",
-    "n writes a note on the page. v picks a row, and Enter writes a note on that row.",
-    "? asks the agent beside the book about the pages in front of you. Its answer comes back as a note.",
-    "N shows notes as footnotes, in the margin, or as marks only.",
-    "< and > shorten and lengthen the rows. Each book remembers its own.",
-    "l lists the bookmarks and notes: Enter goes there, d removes one.",
-    "g opens the contents, when the book has chapters.",
-    "a turns the page-turn animation off, or on again.",
+    "`h` lists every key, any time.",
+    "`m` hangs a ribbon on the page as a bookmark; `c` changes its colour.",
+    "`n` writes a note on the page. `v` picks a row, and `Enter` writes a note on that row.",
+    "`?` asks the agent beside the book about the pages in front of you. Its answer comes back as a note.",
+    "`N` shows notes as footnotes, in the margin, or as marks only.",
+    "`<` and `>` shorten and lengthen the rows. Each book remembers its own.",
+    "`l` lists the bookmarks and notes: `Enter` goes there, `d` removes one.",
+    "`g` opens the contents, when the book has chapters.",
+    "`a` turns the page-turn animation off, or on again.",
 ];
 
 fn draw_tip(f: &mut Frame, index: usize, hide: bool) {
     let area = f.area();
-    let width = area.width.saturating_sub(4).min(56);
+    let width = area.width.saturating_sub(4).min(58);
     let inner = width.saturating_sub(4) as usize;
-    let mut tip = DocLine::new(TIPS[index], Kind::Body);
+    // Wrap the tip as text, its keys carried along as styled runs.
+    let mut plain = String::new();
+    let mut runs = Vec::new();
+    for (i, part) in TIPS[index].split('`').enumerate() {
+        let start = plain.chars().count();
+        plain.push_str(part);
+        if i % 2 == 1 {
+            runs.push(crate::doc::Run {
+                start,
+                end: plain.chars().count(),
+                style: TextStyle {
+                    bold: true,
+                    accent: true,
+                    ..TextStyle::default()
+                },
+            });
+        }
+    }
+    let mut tip = DocLine::new(plain, Kind::Body);
     tip.hang = Some(0);
-    let rows: Vec<String> = crate::layout::set(0, &tip, inner)
+    tip.runs = runs;
+    let rows: Vec<Line> = crate::layout::set(0, &tip, inner)
         .into_iter()
-        .map(|r| r.text)
+        .map(|r| {
+            let mut spans = vec![Span::raw(" ")];
+            spans.extend(
+                r.spans
+                    .into_iter()
+                    .map(|s| Span::styled(s.text, view::style_of(s.style))),
+            );
+            Line::from(spans)
+        })
         .collect();
     // A blank row, the tip, a blank row, the tick box, and the frame.
     let height = (rows.len() as u16 + 5).min(area.height);
@@ -1239,22 +1274,21 @@ fn draw_tip(f: &mut Frame, index: usize, hide: bool) {
     let [popup] = Split::horizontal([Constraint::Length(width)])
         .flex(Flex::Center)
         .areas(row);
-    let dim = Style::new().add_modifier(Modifier::DIM);
+    let dim = Style::new().fg(ratatui::style::Color::Indexed(245));
     let mut lines: Vec<Line> = vec![Line::raw("")];
-    lines.extend(rows.into_iter().map(|r| Line::raw(format!(" {r}"))));
+    lines.extend(rows);
     lines.push(Line::raw(""));
     let tick = if hide { "[x]" } else { "[ ]" };
     let count = format!("{}/{} ", index + 1, TIPS.len());
     let label = format!(" {tick} Don't show tips again");
     let gap = (width as usize).saturating_sub(2 + label.width() + count.width());
     lines.push(Line::from(vec![
-        Span::raw(label),
+        Span::styled(format!(" {tick}"), view::key_style()),
+        Span::raw(" Don't show tips again"),
         Span::raw(" ".repeat(gap)),
         Span::styled(count, dim),
     ]));
-    let block = Block::bordered()
-        .title(" Tip ")
-        .title_bottom(" Enter close · ← → more · Space don't show again ");
+    let block = view::panel("Tip", "Enter close · ← → more · Space don't show again");
     f.render_widget(Clear, popup);
     f.render_widget(Paragraph::new(lines).block(block), popup);
 }
@@ -1272,9 +1306,7 @@ fn draw_input(f: &mut Frame, title: &str, text: &str) {
     while shown.width() > room.saturating_sub(1) {
         shown.remove(0);
     }
-    let block = Block::bordered()
-        .title(title.to_string())
-        .title_bottom(" Enter to keep, Esc to drop ");
+    let block = view::panel(title, "Enter keep · Esc drop");
     f.render_widget(Clear, box_area);
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::raw(shown), Span::raw("▏")])).block(block),

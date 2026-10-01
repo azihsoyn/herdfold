@@ -318,7 +318,50 @@ fn draw_margin_notes(buf: &mut Buffer, area: Rect, x: u16, w: u16, text_h: u16, 
     }
 }
 
-/// A message in a small frame at the bottom right of the pane, above the
+/// The reader's own panels (tips, keys, lists, messages) sit on a ground
+/// of their own, so they are never taken for the book's text.
+const PANEL_BG: Color = Color::Indexed(236);
+const PANEL_FG: Color = Color::Indexed(253);
+const PANEL_EDGE: Color = Color::Cyan;
+
+pub fn panel_style() -> Style {
+    Style::new().bg(PANEL_BG).fg(PANEL_FG)
+}
+
+/// How a key's name is set within a panel.
+pub fn key_style() -> Style {
+    Style::new().fg(PANEL_EDGE).add_modifier(Modifier::BOLD)
+}
+
+/// A panel's frame: rounded, edged in the accent colour, titled in bold,
+/// with `hint` (what the keys do here) along its foot.
+pub fn panel(title: &str, hint: &str) -> ratatui::widgets::Block<'static> {
+    let mut block = ratatui::widgets::Block::bordered()
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::new().fg(PANEL_EDGE))
+        .style(panel_style());
+    if !title.is_empty() {
+        block = block.title(Span::styled(format!(" {title} "), key_style()));
+    }
+    if !hint.is_empty() {
+        block = block.title_bottom(Span::styled(
+            format!(" {hint} "),
+            Style::new().fg(Color::Indexed(245)),
+        ));
+    }
+    block
+}
+
+/// Dims the page behind a panel, so the panel reads as in front of it.
+pub fn backdrop(buf: &mut Buffer, area: Rect) {
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            buf[(x, y)].modifier.insert(Modifier::DIM);
+        }
+    }
+}
+
+/// A message in a small panel at the bottom right of the pane, above the
 /// footer, as herdr shows its notifications.
 fn draw_snackbar(buf: &mut Buffer, area: Rect, text: &str) {
     let room = (area.width as usize).saturating_sub(6);
@@ -332,11 +375,7 @@ fn draw_snackbar(buf: &mut Buffer, area: Rect, text: &str) {
     let frame = Rect::new(x, y, w, 3);
     ratatui::widgets::Clear.render(frame, buf);
     Paragraph::new(Line::raw(format!(" {text} ")))
-        .block(
-            ratatui::widgets::Block::bordered()
-                .border_type(ratatui::widgets::BorderType::Rounded)
-                .border_style(Style::new().add_modifier(Modifier::DIM)),
-        )
+        .block(panel("", ""))
         .render(frame, buf);
 }
 
@@ -374,7 +413,7 @@ fn draw_ribbon(buf: &mut Buffer, area: Rect, x: u16, w: u16, side: Side, color: 
     buf.set_string(rx, area.y + 3, "▛▜", fg);
 }
 
-fn style_of(t: TextStyle) -> Style {
+pub fn style_of(t: TextStyle) -> Style {
     let mut s = Style::new();
     for (on, m) in [
         (t.bold, Modifier::BOLD),
