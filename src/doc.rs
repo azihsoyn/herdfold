@@ -1,23 +1,87 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// How a line is broken into rows. The book never looks at what a line means;
-/// the input format says which of these it is.
+/// How a line is broken into rows. The input format says which it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// Prose: broken at spaces (or between wide characters), hanging indent kept.
     Body,
-    /// Same breaking as `Body`, drawn bold.
+    /// Breaks like `Body`; kept off the foot of a page.
     Heading,
     /// Preformatted: whitespace kept, broken hard at the edge.
     Pre,
+    /// A rule across the column, drawn with the line's one character.
+    Rule,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// How a stretch of text is drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Style {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bold: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub italic: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub underline: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strike: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dim: bool,
+    /// Headings and the rules under them.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub accent: bool,
+    /// Inline code.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub code: bool,
+}
+
+impl Style {
+    /// Both styles at once.
+    pub fn with(self, o: Self) -> Self {
+        Self {
+            bold: self.bold || o.bold,
+            italic: self.italic || o.italic,
+            underline: self.underline || o.underline,
+            strike: self.strike || o.strike,
+            dim: self.dim || o.dim,
+            accent: self.accent || o.accent,
+            code: self.code || o.code,
+        }
+    }
+}
+
+/// Text in one style, as drawn.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Styled {
+    pub text: String,
+    #[serde(default)]
+    pub style: Style,
+}
+
+/// `style` over the characters `start..end` of a line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Run {
+    pub start: usize,
+    pub end: usize,
+    pub style: Style,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Line {
     pub text: String,
     pub kind: Kind,
+    /// Style of the whole line; `runs` add to it.
+    pub style: Style,
+    pub runs: Vec<Run>,
+    /// Indent of wrapped rows. `None` repeats the line's own leading spaces.
+    pub hang: Option<usize>,
+    /// Drawn (dim) at the start of every row of the line, e.g. a quote bar.
+    pub gutter: String,
 }
 
 impl Line {
@@ -25,7 +89,19 @@ impl Line {
         Self {
             text: expand_tabs(&text.into()),
             kind,
+            style: Style::default(),
+            runs: Vec::new(),
+            hang: None,
+            gutter: String::new(),
         }
+    }
+
+    /// The style at character `i`.
+    pub fn style_at(&self, i: usize) -> Style {
+        self.runs
+            .iter()
+            .filter(|r| r.start <= i && i < r.end)
+            .fold(self.style, |s, r| s.with(r.style))
     }
 }
 
@@ -44,7 +120,7 @@ pub struct Document {
     pub chapters: Vec<Chapter>,
 }
 
-fn expand_tabs(s: &str) -> String {
+pub fn expand_tabs(s: &str) -> String {
     if !s.contains('\t') {
         return s.to_string();
     }

@@ -13,7 +13,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::doc::Kind;
+use ratatui::style::Color;
+
+use crate::doc::{Style as TextStyle, Styled};
 
 /// Rows above the text: margin, running head, gap.
 const TOP: u16 = 3;
@@ -55,10 +57,9 @@ pub struct PageView {
     pub note: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PageRow {
-    pub text: String,
-    pub kind: Kind,
+    pub spans: Vec<Styled>,
 }
 
 /// What a key asks for, in either pane.
@@ -152,15 +153,41 @@ pub fn render(f: &mut Frame, area: Rect, view: Option<&PageView>) {
         .rows
         .iter()
         .take(text_h as usize)
-        .map(|r| match r.kind {
-            Kind::Heading => Line::styled(r.text.as_str(), Style::new().add_modifier(Modifier::BOLD)),
-            Kind::Body | Kind::Pre => Line::raw(r.text.as_str()),
+        .map(|r| {
+            Line::from(
+                r.spans
+                    .iter()
+                    .map(|s| Span::styled(s.text.as_str(), style_of(s.style)))
+                    .collect::<Vec<_>>(),
+            )
         })
         .collect();
     f.render_widget(Paragraph::new(lines), Rect::new(x, area.y + TOP, w, text_h));
 
     let footer = footer(v, w as usize);
     f.render_widget(Paragraph::new(footer), Rect::new(x, area.y + area.height - 2, w, 1));
+}
+
+fn style_of(t: TextStyle) -> Style {
+    let mut s = Style::new();
+    for (on, m) in [
+        (t.bold, Modifier::BOLD),
+        (t.italic, Modifier::ITALIC),
+        (t.underline, Modifier::UNDERLINED),
+        (t.strike, Modifier::CROSSED_OUT),
+        (t.dim, Modifier::DIM),
+    ] {
+        if on {
+            s = s.add_modifier(m);
+        }
+    }
+    if t.accent {
+        s = s.fg(Color::Cyan);
+    }
+    if t.code {
+        s = s.fg(Color::Yellow);
+    }
+    s
 }
 
 /// `12  ━━━━━━──────` on a left page, `━━━━━━──────  13 / 240` otherwise,

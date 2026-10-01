@@ -5,9 +5,9 @@
 use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::doc::{Document, Kind};
+use crate::doc::{Document, Kind, Line, Style, Styled};
 
 /// A place in the source text: a line and a character offset into it.
 /// Bookmarks are kept as these rather than page numbers, because the page a
@@ -21,7 +21,10 @@ pub struct Pos {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     pub pos: Pos,
+    /// The row as plain text.
     pub text: String,
+    /// The row as drawn.
+    pub spans: Vec<Styled>,
     pub kind: Kind,
 }
 
@@ -43,20 +46,17 @@ impl Layout {
     pub fn new(doc: &Document, width: usize, height: usize) -> Self {
         let width = width.max(1);
         let height = height.max(1);
-        let mut rows = Vec::new();
-        for (i, line) in doc.lines.iter().enumerate() {
-            for (offset, text) in wrap(&line.text, width, line.kind) {
-                rows.push(Row {
-                    pos: Pos { line: i, offset },
-                    text,
-                    kind: line.kind,
-                });
-            }
-        }
+        let mut rows: Vec<Row> = doc
+            .lines
+            .iter()
+            .enumerate()
+            .flat_map(|(i, line)| set(i, line, width))
+            .collect();
         if rows.is_empty() {
             rows.push(Row {
                 pos: Pos::default(),
                 text: String::new(),
+                spans: Vec::new(),
                 kind: Kind::Body,
             });
         }
@@ -137,10 +137,15 @@ fn paginate(rows: &[Row], height: usize, breaks: &HashSet<usize>) -> Vec<Span> {
         while end < rows.len() && end - i < room && !opens(&rows[end]) {
             end += 1;
         }
-        let full = end - i == room && end < rows.len();
-        let last = &rows[end - 1];
-        if full && end - i > 1 && last.kind == Kind::Heading && last.pos.offset == 0 {
-            end -= 1;
+        // Pull a heading (and the rule under it) over to the next page.
+        if end - i == room && end < rows.len() {
+            let mut k = end;
+            while k > i + 1 && rows[k - 1].kind == Kind::Rule {
+                k -= 1;
+            }
+            if k > i + 1 && rows[k - 1].kind == Kind::Heading && rows[k - 1].pos.offset == 0 {
+                end = k - 1;
+            }
         }
         pages.push(Span { start: i, end, pad });
         i = end;
@@ -174,20 +179,82 @@ fn can_break(before: char, after: char) -> bool {
         && !NO_END.contains(before)
 }
 
-/// Breaks one source line into rows no wider than `width`. Returns each row
-/// with the character offset it starts at.
-pub fn wrap(text: &str, width: usize, kind: Kind) -> Vec<(usize, String)> {
-    let chars: Vec<char> = text.chars().collect();
+/// Sets line `i` as rows of `width` columns, its gutter and styles applied.
+fn set(i: usize, line: &Line, width: usize) -> Vec<Row> {
+    let w = width.saturating_sub(line.gutter.width()).max(1);
+    let gutter = (!line.gutter.is_empty()).then(|| Styled {
+        text: line.gutter.clone(),
+        style: Style {
+            dim: true,
+            ..Style::default()
+        },
+    });
+    let row = |offset: usize, spans: Vec<Styled>| Row {
+        pos: Pos { line: i, offset },
+        text: spans.iter().map(|s| s.text.as_str()).collect(),
+        spans,
+        kind: line.kind,
+    };
+    if line.kind == Kind::Rule {
+        let c = line.text.chars().next().unwrap_or('─');
+        let rule = Styled {
+            text: std::iter::repeat_n(c, w / width_of(c).max(1)).collect(),
+            style: line.style,
+        };
+        return vec![row(0, gutter.into_iter().chain([rule]).collect())];
+    }
+    let chars: Vec<char> = line.text.chars().collect();
+    pieces(&chars, w, line.kind, line.hang)
+        .into_iter()
+        .map(|p| {
+            let mut spans: Vec<Styled> = gutter.iter().cloned().collect();
+            if p.prefix > 0 {
+                spans.push(Styled {
+                    text: " ".repeat(p.prefix),
+                    style: Style::default(),
+                });
+            }
+            for (k, &c) in chars.iter().enumerate().take(p.end).skip(p.start) {
+                let style = line.style_at(k);
+                match spans.last_mut() {
+                    Some(last) if last.style == style && k > p.start => last.text.push(c),
+                    _ => spans.push(Styled {
+                        text: c.to_string(),
+                        style,
+                    }),
+                }
+            }
+            row(p.start, spans)
+        })
+        .collect()
+}
+
+/// One row of a line: characters `start..end` (trailing spaces dropped),
+/// after `prefix` columns of indent.
+#[derive(Debug, PartialEq)]
+struct Piece {
+    start: usize,
+    end: usize,
+    prefix: usize,
+}
+
+/// Breaks one line into rows no wider than `width`. Wrapped rows are
+/// indented by `hang`, or by the line's own leading spaces when `None`.
+fn pieces(chars: &[char], width: usize, kind: Kind, hang: Option<usize>) -> Vec<Piece> {
     if chars.is_empty() {
-        return vec![(0, String::new())];
+        return vec![Piece {
+            start: 0,
+            end: 0,
+            prefix: 0,
+        }];
     }
     if kind == Kind::Pre {
-        return wrap_hard(&chars, width);
+        return pieces_hard(chars, width);
     }
 
-    let indent = chars.iter().take_while(|&&c| c == ' ').count();
+    let indent = hang.unwrap_or_else(|| chars.iter().take_while(|&&c| c == ' ').count());
     let hang = if indent * 2 <= width { indent } else { 0 };
-    let mut out = Vec::new();
+    let mut out: Vec<Piece> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
         let prefix = if out.is_empty() {
@@ -221,42 +288,95 @@ pub fn wrap(text: &str, width: usize, kind: Kind) -> Vec<(usize, String)> {
                 .filter(|&k| chars[i..k].iter().any(|&c| c != ' '))
                 .unwrap_or(j)
         };
-        let row: String = chars[i..end].iter().collect();
-        out.push((i, " ".repeat(prefix) + row.trim_end()));
+        let mut trimmed = end;
+        while trimmed > i && chars[trimmed - 1] == ' ' {
+            trimmed -= 1;
+        }
+        out.push(Piece {
+            start: i,
+            end: trimmed,
+            prefix,
+        });
         i = end;
     }
     out
 }
 
-fn wrap_hard(chars: &[char], width: usize) -> Vec<(usize, String)> {
+fn pieces_hard(chars: &[char], width: usize) -> Vec<Piece> {
     let mut out = Vec::new();
     let mut start = 0;
-    let mut row = String::new();
     let mut used = 0;
     for (i, &c) in chars.iter().enumerate() {
         let w = width_of(c);
-        if used + w > width && !row.is_empty() {
-            out.push((start, std::mem::take(&mut row)));
+        if used + w > width && i > start {
+            out.push(Piece {
+                start,
+                end: i,
+                prefix: 0,
+            });
             start = i;
             used = 0;
         }
-        row.push(c);
         used += w;
     }
-    out.push((start, row));
+    out.push(Piece {
+        start,
+        end: chars.len(),
+        prefix: 0,
+    });
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc::Line;
+    use crate::doc::Run;
+
+    /// Rows of one line as (offset, text).
+    fn wrap(text: &str, width: usize, kind: Kind) -> Vec<(usize, String)> {
+        set(0, &Line::new(text, kind), width)
+            .into_iter()
+            .map(|r| (r.pos.offset, r.text))
+            .collect()
+    }
 
     fn rows(text: &str, width: usize) -> Vec<String> {
         wrap(text, width, Kind::Body)
             .into_iter()
             .map(|(_, s)| s)
             .collect()
+    }
+
+    #[test]
+    fn styles_follow_the_characters_across_rows() {
+        let mut line = Line::new("aa bb cc", Kind::Body);
+        let bold = Style {
+            bold: true,
+            ..Style::default()
+        };
+        line.runs.push(Run { start: 3, end: 8, style: bold });
+        let rows = set(0, &line, 5);
+        let spans: Vec<Vec<(&str, bool)>> = rows
+            .iter()
+            .map(|r| r.spans.iter().map(|s| (s.text.as_str(), s.style.bold)).collect())
+            .collect();
+        assert_eq!(spans, [vec![("aa ", false), ("bb", true)], vec![("cc", true)]]);
+    }
+
+    #[test]
+    fn gutters_repeat_on_every_row_and_hang_aligns_items() {
+        let mut line = Line::new("• one two three", Kind::Body);
+        line.gutter = "┃ ".into();
+        line.hang = Some(2);
+        assert_eq!(
+            set(0, &line, 11).into_iter().map(|r| r.text).collect::<Vec<_>>(),
+            ["┃ • one two", "┃   three"]
+        );
+    }
+
+    #[test]
+    fn rules_span_the_column() {
+        assert_eq!(set(0, &Line::new("━", Kind::Rule), 4)[0].text, "━━━━");
     }
 
     #[test]

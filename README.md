@@ -35,6 +35,9 @@ on from left to right. Elsewhere it shows one page at a time.
   and a heading is never left alone at the foot of a page.
 - **Rows are at most 72 columns**, with margins around them, however wide the
   pane. Typesetting has long held 60–80 characters to be readable.
+- **Markdown is rendered**: headings drop their `#` and gain a rule, emphasis,
+  code and links are styled, lists, quotes, code blocks and tables are set
+  as such. Other formats are shown as they are.
 - **Chapters come only from the input**: an EPUB's table of contents, Markdown
   headings, the files of a diff. Plain text has none, and none are guessed.
 - **The format is always named** with `--format`; nothing is detected.

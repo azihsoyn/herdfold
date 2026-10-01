@@ -16,7 +16,7 @@ use crate::doc::Document;
 pub enum Format {
     /// Plain text. No chapters.
     Text,
-    /// Markdown. Headings are chapters; fenced code is kept as is.
+    /// Markdown, rendered. Headings are chapters.
     Md,
     /// Unified diff (e.g. `git diff`, `gh pr diff`). Each file is a chapter.
     Diff,
