@@ -9,6 +9,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -31,18 +32,19 @@ pub fn text_size(width: u16, height: u16) -> (usize, usize) {
     (w, h)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Side {
     Single,
     Left,
     Right,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PageView {
     pub side: Side,
     pub head: String,
-    pub rows: Vec<(String, Kind)>,
+    pub rows: Vec<PageRow>,
     /// 1-based.
     pub number: usize,
     pub total: usize,
@@ -53,8 +55,14 @@ pub struct PageView {
     pub note: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PageRow {
+    pub text: String,
+    pub kind: Kind,
+}
+
 /// What a key asks for, in either pane.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Cmd {
     Next,
     Prev,
@@ -67,23 +75,43 @@ pub enum Cmd {
     Back,
 }
 
-pub fn cmd_of(key: KeyEvent) -> Option<Cmd> {
+/// A key press under herdr's key names (`space`, `esc`, `ctrl+c`, `b`, ...),
+/// which is how keys travel between panes.
+pub fn key_name(key: KeyEvent) -> Option<String> {
     if key.kind != KeyEventKind::Press {
         return None;
     }
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        return (key.code == KeyCode::Char('c')).then_some(Cmd::Quit);
-    }
-    Some(match key.code {
-        KeyCode::Char(' ') | KeyCode::Right | KeyCode::PageDown => Cmd::Next,
-        KeyCode::Char('b') | KeyCode::Left | KeyCode::PageUp => Cmd::Prev,
-        KeyCode::Char('m') => Cmd::Mark,
-        KeyCode::Char('g') => Cmd::Contents,
-        KeyCode::Char('q') => Cmd::Quit,
-        KeyCode::Char('k') | KeyCode::Up => Cmd::Up,
-        KeyCode::Char('j') | KeyCode::Down => Cmd::Down,
-        KeyCode::Enter => Cmd::Enter,
-        KeyCode::Esc => Cmd::Back,
+    let base = match key.code {
+        KeyCode::Char(' ') => "space".to_string(),
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Enter => "enter".into(),
+        KeyCode::Esc => "esc".into(),
+        KeyCode::Up => "up".into(),
+        KeyCode::Down => "down".into(),
+        KeyCode::Left => "left".into(),
+        KeyCode::Right => "right".into(),
+        KeyCode::PageUp => "pageup".into(),
+        KeyCode::PageDown => "pagedown".into(),
+        _ => return None,
+    };
+    Some(if key.modifiers.contains(KeyModifiers::CONTROL) {
+        format!("ctrl+{base}")
+    } else {
+        base
+    })
+}
+
+pub fn cmd_of(key: &str) -> Option<Cmd> {
+    Some(match key {
+        "space" | "right" | "pagedown" => Cmd::Next,
+        "b" | "left" | "pageup" => Cmd::Prev,
+        "m" => Cmd::Mark,
+        "g" => Cmd::Contents,
+        "q" | "ctrl+c" => Cmd::Quit,
+        "k" | "up" => Cmd::Up,
+        "j" | "down" => Cmd::Down,
+        "enter" => Cmd::Enter,
+        "esc" => Cmd::Back,
         _ => return None,
     })
 }
@@ -124,9 +152,9 @@ pub fn render(f: &mut Frame, area: Rect, view: Option<&PageView>) {
         .rows
         .iter()
         .take(text_h as usize)
-        .map(|(s, kind)| match kind {
-            Kind::Heading => Line::styled(s.as_str(), Style::new().add_modifier(Modifier::BOLD)),
-            Kind::Body | Kind::Pre => Line::raw(s.as_str()),
+        .map(|r| match r.kind {
+            Kind::Heading => Line::styled(r.text.as_str(), Style::new().add_modifier(Modifier::BOLD)),
+            Kind::Body | Kind::Pre => Line::raw(r.text.as_str()),
         })
         .collect();
     f.render_widget(Paragraph::new(lines), Rect::new(x, area.y + TOP, w, text_h));
@@ -180,6 +208,16 @@ mod tests {
     fn text_is_capped_at_the_measure() {
         assert_eq!(text_size(200, 40), (MEASURE, 34));
         assert_eq!(text_size(50, 40), (42, 34));
+    }
+
+    #[test]
+    fn keys_travel_by_herdr_names() {
+        let press = |code, modifiers| key_name(KeyEvent::new(code, modifiers));
+        assert_eq!(press(KeyCode::Char(' '), KeyModifiers::NONE).as_deref(), Some("space"));
+        assert_eq!(press(KeyCode::Char('c'), KeyModifiers::CONTROL).as_deref(), Some("ctrl+c"));
+        assert_eq!(cmd_of("space"), Some(Cmd::Next));
+        assert_eq!(cmd_of("ctrl+c"), Some(Cmd::Quit));
+        assert_eq!(cmd_of("x"), None);
     }
 
     #[test]

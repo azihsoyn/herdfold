@@ -1,7 +1,7 @@
-//! The reader: holds the place in the book, turns pages, keeps bookmarks.
+//! The reader: holds the place in the book, turns pages, keeps bookmarks,
+//! and answers the socket API for the pane showing the right-hand page.
 
-use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{self, Event};
@@ -12,11 +12,13 @@ use ratatui::widgets::{Block, Clear, List, ListItem, ListState};
 use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
+use crate::api::{Call, EventData, PROTOCOL, Request, ResponseResult};
 use crate::doc::Document;
+use crate::herdr::RightPane;
 use crate::layout::{Layout, Pos};
 use crate::marks::{self, Entry};
-use crate::spread::{FromPartner, Partner};
-use crate::view::{self, Cmd, PageView, Side};
+use crate::server::{ConnId, Hub, Inbound, Server};
+use crate::view::{self, Cmd, PageRow, PageView, Side};
 
 struct Reader {
     doc: Document,
@@ -30,9 +32,15 @@ struct Reader {
     /// Selected row while the contents list is open.
     toc: Option<usize>,
     note: Option<String>,
+    /// The connection drawing the right-hand page, and its size.
+    attached: Option<(ConnId, u16, u16)>,
+    /// The last `page_shown` sent, so unchanged pages are not resent.
+    shown: Option<EventData>,
 }
 
-pub fn run(doc: Document, book: Option<String>, single: bool) -> Result<()> {
+/// Opens the book. With `spread`, and inside herdr, the right-hand page goes
+/// to a pane split off for it.
+pub fn run(doc: Document, book: Option<String>, spread: bool) -> Result<()> {
     let entry = book.as_deref().and_then(marks::load).unwrap_or_default();
     let mut reader = Reader {
         layout: Layout::new(&doc, 1, 1),
@@ -43,37 +51,39 @@ pub fn run(doc: Document, book: Option<String>, single: bool) -> Result<()> {
         spread: false,
         toc: None,
         note: None,
+        attached: None,
+        shown: None,
     };
+    let server = if spread { Server::listen().ok() } else { None };
     let mut terminal = ratatui::init();
-    let result = reader.run(&mut terminal, single);
+    let result = reader.run(&mut terminal, server.as_ref());
     ratatui::restore();
     result
 }
 
 impl Reader {
-    fn run(&mut self, terminal: &mut DefaultTerminal, single: bool) -> Result<()> {
-        let (tx, rx) = mpsc::channel();
-        let mut partner = if single {
-            None
-        } else {
-            Partner::open(terminal.size()?.width, tx)
-        };
-        // Hold the first page until the right pane reports its size, so the
-        // book opens as a spread rather than flashing a single page first.
-        if let Some(p) = partner.as_mut()
-            && let Ok(msg) = rx.recv_timeout(Duration::from_millis(1500))
-        {
-            p.hear(&msg);
+    fn run(&mut self, terminal: &mut DefaultTerminal, server: Option<&Server>) -> Result<()> {
+        let width = terminal.size()?.width;
+        let right = server.and_then(|s| RightPane::open(width, &s.path));
+        let mut cmds = Vec::new();
+        // Hold the first page until the right pane attaches, so the book
+        // opens as a spread rather than flashing a single page first.
+        if let (Some(s), Some(_)) = (server, &right) {
+            let deadline = Instant::now() + Duration::from_millis(1500);
+            while self.attached.is_none() {
+                let left = deadline.saturating_duration_since(Instant::now());
+                let Ok(msg) = s.inbound.recv_timeout(left) else { break };
+                self.answer(&s.hub, msg, &mut cmds);
+            }
         }
         loop {
             let area = terminal.size()?;
             let mut size = (area.width, area.height);
-            let follower = partner.as_ref().and_then(|p| p.size);
-            if let Some((w, h)) = follower {
+            if let Some((_, w, h)) = self.attached {
                 // Both pages are set to the smaller pane so they match.
                 size = (size.0.min(w), size.1.min(h));
             }
-            self.fit(view::text_size(size.0, size.1), follower.is_some());
+            self.fit(view::text_size(size.0, size.1), self.attached.is_some());
 
             let (left, right) = self.views();
             terminal.draw(|f| {
@@ -82,33 +92,79 @@ impl Reader {
                     self.draw_contents(f, sel);
                 }
             })?;
-            if let Some(p) = partner.as_mut()
-                && follower.is_some()
+            let shown = EventData::PageShown { left, right };
+            if let Some(s) = server
+                && self.shown.as_ref() != Some(&shown)
             {
-                p.show(right.as_ref());
+                s.hub.emit(shown.clone());
+                self.shown = Some(shown);
             }
 
-            let mut cmds = Vec::new();
             if event::poll(Duration::from_millis(30))?
                 && let Event::Key(k) = event::read()?
             {
-                cmds.extend(view::cmd_of(k));
+                cmds.extend(view::key_name(k).as_deref().and_then(view::cmd_of));
             }
-            while let Ok(msg) = rx.try_recv() {
-                if let FromPartner::Cmd(c) = msg {
-                    cmds.push(c);
-                }
-                if let Some(p) = partner.as_mut() {
-                    p.hear(&msg);
+            if let Some(s) = server {
+                while let Ok(msg) = s.inbound.try_recv() {
+                    self.answer(&s.hub, msg, &mut cmds);
                 }
             }
-            for c in cmds {
+            for c in std::mem::take(&mut cmds) {
                 if self.handle(c) {
                     self.save();
+                    if let Some(s) = server {
+                        s.hub.emit(EventData::ReaderClosed);
+                    }
                     return Ok(());
                 }
             }
         }
+    }
+
+    /// Answers one request from the socket; keys it carries join `cmds`.
+    fn answer(&mut self, hub: &Hub, msg: Inbound, cmds: &mut Vec<Cmd>) {
+        let (conn, Request { id, call }) = match msg {
+            Inbound::Request(conn, req) => (conn, req),
+            Inbound::Closed(conn) => {
+                hub.forget(conn);
+                if self.attached.is_some_and(|(c, ..)| c == conn) {
+                    self.attached = None;
+                }
+                return;
+            }
+        };
+        let result = match call {
+            Call::Ping(_) => ResponseResult::Pong {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                protocol: PROTOCOL,
+            },
+            Call::EventsSubscribe(p) => {
+                hub.subscribe(conn, &p.subscriptions);
+                // Resend what is open, so the new subscriber has it.
+                self.shown = None;
+                ResponseResult::SubscriptionStarted
+            }
+            Call::ReaderAttach(p) => {
+                self.attached = Some((conn, p.cols, p.rows));
+                ResponseResult::ReaderAttached
+            }
+            Call::ReaderResize(p) => match self.attached {
+                Some((c, ..)) if c == conn => {
+                    self.attached = Some((conn, p.cols, p.rows));
+                    ResponseResult::Ok
+                }
+                _ => {
+                    return hub.fail(conn, id, "not_attached", "reader.attach first");
+                }
+            },
+            Call::ReaderSendKeys(p) => {
+                // Keys with no binding do nothing, as they would if typed here.
+                cmds.extend(p.keys.iter().filter_map(|k| view::cmd_of(k)));
+                ResponseResult::Ok
+            }
+        };
+        hub.reply(conn, id, result);
     }
 
     fn fit(&mut self, (width, height): (usize, usize), spread: bool) {
@@ -158,7 +214,15 @@ impl Reader {
         PageView {
             side,
             head,
-            rows: self.layout.page(n).iter().map(|r| (r.text.clone(), r.kind)).collect(),
+            rows: self
+                .layout
+                .page(n)
+                .iter()
+                .map(|r| PageRow {
+                    text: r.text.clone(),
+                    kind: r.kind,
+                })
+                .collect(),
             number: n + 1,
             total: self.layout.page_count(),
             marked: self.entry.marks.iter().any(|&m| self.layout.page_of(m) == n),

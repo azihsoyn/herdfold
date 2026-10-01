@@ -38,3 +38,28 @@ on from left to right. Elsewhere it shows one page at a time.
   (`$XDG_DATA_HOME` if set), as a position in the text rather than a page
   number, so it survives a change of pane size.
 - **There is no scrolling.** Only turning.
+
+`--no-spread` keeps one page at a time even inside herdr.
+
+## Socket API
+
+The reader speaks herdr's protocol: newline-delimited JSON over a Unix
+socket, whose path it hands to the panes it opens as `HERDBOOK_SOCKET_PATH`.
+
+```
+{"id":"1","method":"ping","params":{}}
+{"id":"1","result":{"type":"pong","version":"0.1.0","protocol":1}}
+
+{"id":"2","method":"reader.send_keys","params":{"keys":["space"]}}
+{"id":"2","result":{"type":"ok"}}
+
+{"id":"3","method":"events.subscribe","params":{"subscriptions":[{"type":"page.shown"}]}}
+{"id":"3","result":{"type":"subscription_started"}}
+{"event":"page_shown","data":{"type":"page_shown","left":{..},"right":{..}}}
+```
+
+Failures are `{"id":..,"error":{"code":..,"message":..}}`. The right-hand
+page is drawn by `herdbook reader attach`, an ordinary client of this API.
+`herdbook api schema --json` prints the full schema; like herdr's own
+commands, CLI failures are written to stderr as
+`{"id":"cli:<group>:<command>","error":{..}}` with exit code 1.
