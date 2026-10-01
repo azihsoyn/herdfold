@@ -272,8 +272,9 @@ impl Reader {
                     self.toc = Some(here.unwrap_or(0));
                 }
             }
-            Cmd::Quit => return true,
-            Cmd::Up | Cmd::Down | Cmd::Enter | Cmd::Back => {}
+            // Esc steps back out of whatever is open: the contents (above), else the book.
+            Cmd::Quit | Cmd::Back => return true,
+            Cmd::Up | Cmd::Down | Cmd::Enter => {}
         }
         false
     }

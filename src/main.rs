@@ -24,7 +24,7 @@ pub const NAME: &str = env!("CARGO_PKG_NAME");
 /// Long text, laid out as facing pages you turn.
 ///
 /// Space turns the page, b turns back, m bookmarks, g opens the contents,
-/// q closes the book. Inside herdr the pane is split and the book opens as
+/// q or Esc closes the book. Inside herdr the pane is split and the book opens as
 /// a spread across two panes; elsewhere it shows one page at a time.
 #[derive(Parser)]
 #[command(name = NAME, version, subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]

@@ -23,7 +23,7 @@ on from left to right. Elsewhere it shows one page at a time.
 | `b` / `←` | turn back |
 | `m` | bookmark what is open (again to remove) |
 | `g` | contents: chapters, then bookmarks |
-| `q` | close the book |
+| `q` / `Esc` | close the book (`Esc` closes the contents first, if open) |
 
 ## What it does, and what it doesn't
 
