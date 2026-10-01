@@ -22,6 +22,7 @@ on from left to right. Elsewhere it shows one page at a time.
 | `Space` / `→` | turn the page |
 | `b` / `←` | turn back |
 | `m` | bookmark what is open (again to remove) |
+| `c` | change the colour of the bookmark here |
 | `n` | write a note on the page |
 | `v` | choose a row (`j` / `k`), then `Enter` to write a note on it, or `?` to ask about it |
 | `?` | ask the agent about the open pages |
@@ -30,6 +31,7 @@ on from left to right. Elsewhere it shows one page at a time.
 | `g` | contents |
 | `<` / `>` | shorter / longer rows (narrower / wider margins) |
 | `a` | page-turn animation on / off (remembered) |
+| `h` | list the keys |
 | `q` / `Esc` | close the book (`Esc` closes the contents first, if open) |
 
 ## What it does, and what it doesn't
@@ -62,6 +64,9 @@ on from left to right. Elsewhere it shows one page at a time.
   tab (else the same workspace, or the one named with `--agent`). It
   answers in its own pane, and keeps a short answer in the book as a note
   (`✦`) by running `herdbook note add`.
+- **A bookmark is a ribbon** hanging from the top of its page into the
+  margin by the gutter, in one of six colours (`c` changes it; new
+  bookmarks take the colour last chosen).
 - **Your place is kept** per book in `~/.local/share/herdbook/marks.json`
   (`$XDG_DATA_HOME` if set), as a position in the text rather than a page
   number, so it survives a change of pane size.

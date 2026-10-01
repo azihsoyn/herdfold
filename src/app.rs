@@ -19,15 +19,20 @@ use crate::doc::Document;
 use crate::doc::{Kind, Line as DocLine, Style as TextStyle};
 use crate::herdr::{self, RightPane};
 use crate::layout::{Layout, Pos};
-use crate::marks::{self, Anchor, Author, Entry, Note, NoteDisplay};
+use crate::marks::{self, Anchor, Author, Entry, Mark, Note, NoteDisplay, Ribbon};
 use crate::server::{ConnId, Hub, Inbound, Server};
 use crate::turn::{Turn, Turning};
 use crate::view::{self, Cmd, MarginNote, PageRow, PageView, Side};
+
+/// How long a passing message stays up.
+const TOAST: Duration = Duration::from_millis(3000);
 
 /// What keys are doing at the moment.
 #[derive(Clone, Debug, PartialEq)]
 enum Mode {
     Reading,
+    /// The keys, listed.
+    Help,
     /// The chapter list, with the selected row.
     Contents(usize),
     /// Bookmarks and notes, with the selected row.
@@ -49,6 +54,8 @@ struct Shelved {
     label: String,
     at: Pos,
     item: Item,
+    /// A bookmark's ribbon, for colouring its mark in the list.
+    color: Option<Ribbon>,
 }
 
 enum Item {
@@ -66,8 +73,8 @@ struct Reader {
     chapter_pages: Vec<usize>,
     spread: bool,
     mode: Mode,
-    /// A one-off message, shown in place of the running head.
-    status: Option<String>,
+    /// A passing message, shown in place of the running head for a while.
+    toast: Option<(String, Instant)>,
     /// The connection drawing the right-hand page, and its size.
     attached: Option<(ConnId, u16, u16)>,
     /// The pages last sent in `page_shown`, so unchanged pages are not resent.
@@ -92,6 +99,8 @@ struct Reader {
     keep_settings: bool,
     /// The agent named with `--agent`, if any.
     agent: Option<String>,
+    /// Colour for the next bookmark.
+    ribbon: Ribbon,
     /// Where this reader's socket is, for an agent to write notes back.
     socket: Option<PathBuf>,
     /// Outcomes of work done off the main loop (asking the agent).
@@ -133,7 +142,7 @@ pub fn run(
         chapter_pages: Vec::new(),
         spread: false,
         mode: Mode::Reading,
-        status: None,
+        toast: None,
         attached: None,
         shown: None,
         animate,
@@ -146,6 +155,7 @@ pub fn run(
         pane_width: 0,
         keep_settings: true,
         agent,
+        ribbon: settings.ribbon.unwrap_or_default(),
         socket: None,
         background: mpsc::channel(),
     };
@@ -153,6 +163,7 @@ pub fn run(
     // writes its answers back here.
     let server = Server::listen().ok();
     reader.socket = server.as_ref().map(|s| s.path.clone());
+    reader.say("h for the keys".into());
     let mut terminal = ratatui::init();
     let result = reader.run(&mut terminal, server.as_ref(), spread);
     ratatui::restore();
@@ -246,7 +257,7 @@ impl Reader {
                 }
             }
             while let Ok(status) = self.background.1.try_recv() {
-                self.status = Some(status);
+                self.say(status);
             }
             for key in std::mem::take(&mut keys) {
                 if self.handle(&key) {
@@ -315,7 +326,7 @@ impl Reader {
                     question: p.question,
                 });
                 self.notes_rev += 1;
-                self.status = Some(match p.by {
+                self.say(match p.by {
                     Author::Agent => format!("A note from the agent on p.{page}"),
                     Author::Reader => format!("Note kept on p.{page}"),
                 });
@@ -475,25 +486,39 @@ impl Reader {
             rows,
             number: n + 1,
             total: self.layout.page_count(),
-            marked: self
+            ribbon: self
                 .entry
                 .marks
                 .iter()
-                .any(|&m| self.layout.page_of(m) == n),
+                .find(|m| self.layout.page_of(m.at) == n)
+                .map(|m| m.color),
             noted: self
                 .entry
                 .notes
                 .iter()
                 .any(|note| note.anchor == Anchor::Page && self.layout.page_of(note.at) == n),
             width: self.layout.width,
-            status: (side != Side::Right).then(|| self.status.clone()).flatten(),
+            status: (side != Side::Right).then(|| self.toast()).flatten(),
             margin_notes,
         }
     }
 
+    /// Shows `text` in place of the running head for a few seconds.
+    fn say(&mut self, text: String) {
+        self.toast = Some((text, Instant::now()));
+    }
+
+    /// The message showing now, if one is still up.
+    fn toast(&self) -> Option<String> {
+        self.toast
+            .as_ref()
+            .filter(|(_, since)| since.elapsed() < TOAST)
+            .map(|(text, _)| text.clone())
+    }
+
     /// Handles one key, by herdr's key name. Returns true to quit.
     fn handle(&mut self, key: &str) -> bool {
-        self.status = None;
+        self.toast = None;
         if let Mode::Writing { .. } = self.mode {
             self.write(key);
             return false;
@@ -506,6 +531,11 @@ impl Reader {
             Mode::Contents(sel) => self.in_contents(sel, cmd),
             Mode::Shelf(sel) => self.in_shelf(sel, cmd),
             Mode::Select(at) => self.in_select(at, cmd),
+            // Any key puts the list of keys away; q too, rather than closing the book.
+            Mode::Help => {
+                self.mode = Mode::Reading;
+                false
+            }
             Mode::Writing { .. } => false,
         }
     }
@@ -526,15 +556,17 @@ impl Reader {
             Cmd::Mark => self.toggle_mark(page),
             Cmd::Animate => self.toggle_animation(),
             Cmd::NoteDisplay => self.cycle_note_display(),
+            Cmd::Help => self.mode = Mode::Help,
+            Cmd::Color => self.recolor_mark(page),
             // Step from the rows as set, which the pane may hold shorter than the measure.
             Cmd::Wider if self.layout.width < self.measure => {
-                self.status = Some("Rows are already as long as the pane allows".into());
+                self.say("Rows are already as long as the pane allows".into());
             }
             Cmd::Wider => self.set_measure(self.layout.width + view::MEASURE_STEP),
             Cmd::Narrower => self.set_measure(self.layout.width.saturating_sub(view::MEASURE_STEP)),
             Cmd::Contents => {
                 if self.doc.chapters.is_empty() {
-                    self.status = Some("No chapters in this input".into());
+                    self.say("No chapters in this input".into());
                 } else {
                     let open = page + self.step();
                     let here = self.chapter_pages.iter().rposition(|&p| p < open);
@@ -544,7 +576,7 @@ impl Reader {
             Cmd::Shelf => {
                 let shelf = self.shelf();
                 if shelf.is_empty() {
-                    self.status = Some("No bookmarks or notes yet".into());
+                    self.say("No bookmarks or notes yet".into());
                 } else {
                     let here = self.layout.start_of(page);
                     let sel = shelf.iter().rposition(|s| s.at <= here).unwrap_or(0);
@@ -561,7 +593,7 @@ impl Reader {
             }
             Cmd::Select => match self.open_rows().first() {
                 Some(&at) => self.mode = Mode::Select(at),
-                None => self.status = Some("Nothing on this page to choose".into()),
+                None => self.say("Nothing on this page to choose".into()),
             },
             // Esc steps back out of whatever is open; here, the book.
             Cmd::Quit | Cmd::Back => return true,
@@ -603,12 +635,12 @@ impl Reader {
                 match shelf.get(sel).map(|s| &s.item) {
                     Some(&Item::Mark(i)) => {
                         self.entry.marks.remove(i);
-                        self.status = Some("Bookmark removed".into());
+                        self.say("Bookmark removed".into());
                     }
                     Some(&Item::Note(i)) => {
                         self.entry.notes.remove(i);
                         self.notes_rev += 1;
-                        self.status = Some("Note removed".into());
+                        self.say("Note removed".into());
                     }
                     None => {}
                 }
@@ -679,13 +711,13 @@ impl Reader {
                         question: None,
                     });
                     self.notes_rev += 1;
-                    self.status = Some("Note kept".into());
+                    self.say("Note kept".into());
                     self.save();
                 }
             }
             "esc" | "ctrl+c" => {
                 if !text.is_empty() {
-                    self.status = Some("Note dropped".into());
+                    self.say("Note dropped".into());
                 }
                 self.mode = Mode::Reading;
             }
@@ -734,7 +766,7 @@ impl Reader {
         self.measure = measure.clamp(view::MEASURE_MIN, view::MEASURE_MAX);
         self.entry.measure = Some(self.measure);
         let measure = self.measure;
-        self.status = Some(match self.update_settings(|s| s.measure = Some(measure)) {
+        self.say(match self.update_settings(|s| s.measure = Some(measure)) {
             Ok(()) => format!("Rows up to {} columns", self.measure),
             Err(e) => format!("Could not save the setting: {e}"),
         });
@@ -747,7 +779,7 @@ impl Reader {
         self.animate = !self.animate;
         self.turning = None;
         let animate = self.animate;
-        self.status = Some(match self.update_settings(|s| s.animate = Some(animate)) {
+        self.say(match self.update_settings(|s| s.animate = Some(animate)) {
             Ok(()) if animate => "Page turns drawn".into(),
             Ok(()) => "Page turns instant".into(),
             Err(e) => format!("Could not save the setting: {e}"),
@@ -759,7 +791,7 @@ impl Reader {
         self.note_display = self.note_display.next();
         let display = self.note_display;
         let narrow = view::margin_room(self.pane_width, self.layout.width) < view::MARGIN_NOTE_MIN;
-        self.status = Some(match self.update_settings(|s| s.notes = Some(display)) {
+        self.say(match self.update_settings(|s| s.notes = Some(display)) {
             Ok(()) => match display {
                 NoteDisplay::Footnotes => "Notes as footnotes".into(),
                 NoteDisplay::Margin if narrow => {
@@ -779,12 +811,12 @@ impl Reader {
         let agent = match herdr::find_agent(self.agent.as_deref()) {
             Ok(a) => a,
             Err(e) => {
-                self.status = Some(e);
+                self.say(e);
                 return;
             }
         };
         let prompt = self.prompt(question, anchor, at);
-        self.status = Some(format!("Asking {}…", agent.label));
+        self.say(format!("Asking {}…", agent.label));
         let done = self.background.0.clone();
         std::thread::spawn(move || {
             let status = match herdr::prompt(&agent.target, &prompt) {
@@ -850,19 +882,47 @@ impl Reader {
     }
 
     /// A bookmark covers what is open: one page, or both pages of a spread.
+    /// A new one takes the colour last chosen.
     fn toggle_mark(&mut self, page: usize) {
         let open = page..page + self.step();
         let before = self.entry.marks.len();
         let layout = &self.layout;
         self.entry
             .marks
-            .retain(|&m| !open.contains(&layout.page_of(m)));
+            .retain(|m| !open.contains(&layout.page_of(m.at)));
         if self.entry.marks.len() == before {
-            self.entry.marks.push(self.layout.start_of(page));
-            self.entry.marks.sort();
-            self.status = Some(format!("Bookmarked p.{}", page + 1));
+            let color = self.ribbon;
+            let at = self.layout.start_of(page);
+            let i = self.entry.marks.partition_point(|m| m.at <= at);
+            self.entry.marks.insert(i, Mark { at, color });
+            self.say(format!("Bookmarked p.{} ({})", page + 1, color.name()));
         } else {
-            self.status = Some("Bookmark removed".into());
+            self.say("Bookmark removed".into());
+        }
+        self.save();
+    }
+
+    /// Gives the bookmark on the open pages its next colour, which new
+    /// bookmarks then take too.
+    fn recolor_mark(&mut self, page: usize) {
+        let open = page..page + self.step();
+        let layout = &self.layout;
+        let Some(mark) = self
+            .entry
+            .marks
+            .iter_mut()
+            .find(|m| open.contains(&layout.page_of(m.at)))
+        else {
+            self.say("No bookmark here (m to place one)".into());
+            return;
+        };
+        mark.color = mark.color.next();
+        let color = mark.color;
+        self.ribbon = color;
+        if let Err(e) = self.update_settings(|s| s.ribbon = Some(color)) {
+            self.say(format!("Could not save the setting: {e}"));
+        } else {
+            self.say(format!("Ribbon: {}", color.name()));
         }
         self.save();
     }
@@ -879,7 +939,7 @@ impl Reader {
         if let Some(book) = &self.book
             && let Err(e) = marks::save(book, &self.entry)
         {
-            self.status = Some(format!("Could not save the place: {e}"));
+            self.say(format!("Could not save the place: {e}"));
         }
     }
 
@@ -895,10 +955,11 @@ impl Reader {
 
     /// Bookmarks and notes, in reading order.
     fn shelf(&self) -> Vec<Shelved> {
-        let marks = self.entry.marks.iter().enumerate().map(|(i, &at)| Shelved {
-            label: format!("▍ {}", self.row_text(at)),
-            at,
+        let marks = self.entry.marks.iter().enumerate().map(|(i, m)| Shelved {
+            label: format!("▍ {}", self.row_text(m.at)),
+            at: m.at,
             item: Item::Mark(i),
+            color: Some(m.color),
         });
         let notes = self.entry.notes.iter().enumerate().map(|(i, n)| {
             let sign = sign(n);
@@ -910,6 +971,7 @@ impl Reader {
                 label,
                 at: n.at,
                 item: Item::Note(i),
+                color: None,
             }
         });
         let mut all: Vec<Shelved> = marks.chain(notes).collect();
@@ -920,9 +982,10 @@ impl Reader {
     fn draw_overlay(&self, f: &mut Frame) {
         match &self.mode {
             Mode::Reading | Mode::Select(_) => {}
+            Mode::Help => draw_help(f),
             Mode::Contents(sel) => {
                 let top = self.doc.chapters.iter().map(|c| c.level).min().unwrap_or(1);
-                let entries: Vec<(String, Pos)> = self
+                let entries: Vec<(String, Pos, Option<Ribbon>)> = self
                     .doc
                     .chapters
                     .iter()
@@ -932,14 +995,17 @@ impl Reader {
                             line: c.line,
                             offset: 0,
                         };
-                        (format!("{indent}{}", c.title), at)
+                        (format!("{indent}{}", c.title), at, None)
                     })
                     .collect();
                 self.draw_list(f, " Contents ", &entries, *sel);
             }
             Mode::Shelf(sel) => {
-                let entries: Vec<(String, Pos)> =
-                    self.shelf().into_iter().map(|s| (s.label, s.at)).collect();
+                let entries: Vec<(String, Pos, Option<Ribbon>)> = self
+                    .shelf()
+                    .into_iter()
+                    .map(|s| (s.label, s.at, s.color))
+                    .collect();
                 self.draw_list(
                     f,
                     " Bookmarks and notes — Enter to go, d to remove ",
@@ -965,7 +1031,13 @@ impl Reader {
         }
     }
 
-    fn draw_list(&self, f: &mut Frame, title: &str, entries: &[(String, Pos)], sel: usize) {
+    fn draw_list(
+        &self,
+        f: &mut Frame,
+        title: &str,
+        entries: &[(String, Pos, Option<Ribbon>)],
+        sel: usize,
+    ) {
         let area = f.area();
         let width = area.width.saturating_sub(4).min(72);
         let height = area.height.saturating_sub(4).min(entries.len() as u16 + 2);
@@ -979,12 +1051,22 @@ impl Reader {
         let dim = Style::new().add_modifier(Modifier::DIM);
         let items: Vec<ListItem> = entries
             .iter()
-            .map(|(label, at)| {
+            .map(|(label, at, color)| {
                 let num = format!(" {}", self.layout.page_of(*at) + 1);
                 let label = view::fit(label, inner.saturating_sub(num.width()));
                 let gap = " ".repeat(inner.saturating_sub(label.width() + num.width()));
+                // A bookmark's mark (its first character) in its ribbon's colour.
+                let mut chars = label.chars();
+                let lead = match color {
+                    Some(c) => Span::styled(
+                        chars.next().map(String::from).unwrap_or_default(),
+                        Style::new().fg(view::ribbon_color(*c)),
+                    ),
+                    None => Span::raw(""),
+                };
                 ListItem::new(Line::from(vec![
-                    Span::raw(label),
+                    lead,
+                    Span::raw(chars.as_str().to_string()),
                     Span::raw(gap),
                     Span::styled(num, dim),
                 ]))
@@ -1030,6 +1112,53 @@ fn footnote_rows(note: &Note, width: usize) -> Vec<PageRow> {
         .collect()
 }
 
+/// The keys, as `h` lists them.
+const KEYS: &[(&str, &str)] = &[
+    ("Space  →", "turn the page"),
+    ("b  ←", "turn back"),
+    ("g", "contents"),
+    ("", ""),
+    ("m", "bookmark this page (again to remove)"),
+    ("c", "colour of the bookmark here"),
+    ("n", "write a note on this page"),
+    ("v", "choose a row: Enter to note it, ? to ask"),
+    ("l", "bookmarks and notes (Enter go, d remove)"),
+    ("N", "notes as footnotes / in margin / marks"),
+    ("?", "ask the agent about these pages"),
+    ("", ""),
+    ("<  >", "shorter / longer rows"),
+    ("a", "page-turn animation on / off"),
+    ("h", "these keys"),
+    ("q  Esc", "close the book"),
+];
+
+fn draw_help(f: &mut Frame) {
+    let area = f.area();
+    let width = area.width.saturating_sub(4).min(56);
+    let height = area.height.saturating_sub(2).min(KEYS.len() as u16 + 2);
+    let [row] = Split::vertical([Constraint::Length(height)])
+        .flex(Flex::Center)
+        .areas(area);
+    let [popup] = Split::horizontal([Constraint::Length(width)])
+        .flex(Flex::Center)
+        .areas(row);
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    let lines: Vec<Line> = KEYS
+        .iter()
+        .map(|(k, what)| {
+            Line::from(vec![
+                Span::styled(format!(" {k:<9}"), bold),
+                Span::raw(*what),
+            ])
+        })
+        .collect();
+    let block = Block::bordered()
+        .title(" Keys ")
+        .title_bottom(" any key to close ");
+    f.render_widget(Clear, popup);
+    f.render_widget(Paragraph::new(lines).block(block), popup);
+}
+
 /// A one-line box near the foot of the pane for writing a note.
 fn draw_input(f: &mut Frame, title: &str, text: &str) {
     let area = f.area();
@@ -1071,7 +1200,7 @@ mod tests {
             chapter_pages: Vec::new(),
             spread: false,
             mode: Mode::Reading,
-            status: None,
+            toast: None,
             attached: None,
             shown: None,
             animate: false,
@@ -1084,6 +1213,7 @@ mod tests {
             pane_width: 80,
             keep_settings: false,
             agent: None,
+            ribbon: Ribbon::default(),
             socket: None,
             background: mpsc::channel(),
         };
@@ -1190,6 +1320,35 @@ mod tests {
         assert!(p.contains(
             "note add --line 1 --offset 0 --anchor line --question 'why?' '<your short answer>'"
         ));
+    }
+
+    #[test]
+    fn messages_pass() {
+        let mut r = reader(&["one"], 3);
+        keys(&mut r, &["m"]);
+        assert_eq!(r.views().0.status.as_deref(), Some("Bookmarked p.1 (red)"));
+        r.toast.as_mut().unwrap().1 -= TOAST;
+        assert_eq!(r.views().0.status, None);
+    }
+
+    #[test]
+    fn a_bookmark_changes_colour_and_new_ones_follow() {
+        let mut r = reader(&["one", "two"], 1);
+        keys(&mut r, &["c"]);
+        assert!(r.entry.marks.is_empty());
+        keys(&mut r, &["m", "c", "c"]);
+        assert_eq!(r.views().0.ribbon, Some(Ribbon::Green));
+        keys(&mut r, &["space", "m"]);
+        assert_eq!(r.entry.marks[1].color, Ribbon::Green);
+    }
+
+    #[test]
+    fn q_puts_the_keys_away_rather_than_closing_the_book() {
+        let mut r = reader(&["one"], 3);
+        keys(&mut r, &["h"]);
+        assert_eq!(r.mode, Mode::Help);
+        assert!(!r.handle("q"));
+        assert_eq!(r.mode, Mode::Reading);
     }
 
     #[test]

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::doc::{Style as TextStyle, Styled};
+use crate::marks::Ribbon;
 
 /// Rows above the text: margin, running head, gap.
 const TOP: u16 = 3;
@@ -53,7 +54,9 @@ pub struct PageView {
     /// 1-based.
     pub number: usize,
     pub total: usize,
-    pub marked: bool,
+    /// The bookmark on this page, by the colour of its ribbon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ribbon: Option<Ribbon>,
     /// The page has a reading note on it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub noted: bool,
@@ -125,6 +128,10 @@ pub enum Cmd {
     NoteDisplay,
     /// Ask the agent about the page, or the chosen row.
     Ask,
+    /// Change the colour of the bookmark here.
+    Color,
+    /// The keys, listed.
+    Help,
     /// Remove the bookmark or note chosen in the list.
     Delete,
 }
@@ -177,6 +184,8 @@ pub fn cmd_of(key: &str) -> Option<Cmd> {
         "l" => Cmd::Shelf,
         "N" => Cmd::NoteDisplay,
         "?" => Cmd::Ask,
+        "c" => Cmd::Color,
+        "h" | "H" => Cmd::Help,
         "d" => Cmd::Delete,
         _ => return None,
     })
@@ -210,14 +219,9 @@ pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
     let (x, w) = column(area, v.width);
     let dim = Style::new().add_modifier(Modifier::DIM);
 
-    // Running head on the outer edge; the ribbon (bookmark) and the pencil
-    // (a note on the page) by the gutter.
-    let ribbon = match (v.marked, v.noted) {
-        (true, true) => "✎ ▍",
-        (true, false) => "▍",
-        (false, true) => "✎",
-        (false, false) => "",
-    };
+    // Running head on the outer edge; the pencil (a note on the page) by
+    // the gutter.
+    let ribbon = if v.noted { "✎" } else { "" };
     let (head, style) = match &v.status {
         Some(n) => (n.as_str(), Style::new()),
         None => (v.head.as_str(), dim.add_modifier(Modifier::ITALIC)),
@@ -262,6 +266,9 @@ pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
     Paragraph::new(lines).render(Rect::new(x, area.y + TOP, w, text_h), buf);
 
     draw_margin_notes(buf, area, x, w, text_h, v);
+    if let Some(color) = v.ribbon {
+        draw_ribbon(buf, area, x, w, v.side, color);
+    }
 
     // A row with a note gets a mark in the margin, like a highlighter's stroke.
     if x >= area.x + 2 {
@@ -305,6 +312,40 @@ fn draw_margin_notes(buf: &mut Buffer, area: Rect, x: u16, w: u16, text_h: u16, 
         }
         next_free = row + 1;
     }
+}
+
+pub fn ribbon_color(r: Ribbon) -> Color {
+    match r {
+        Ribbon::Red => Color::Red,
+        Ribbon::Yellow => Color::Yellow,
+        Ribbon::Green => Color::Green,
+        Ribbon::Cyan => Color::Cyan,
+        Ribbon::Blue => Color::Blue,
+        Ribbon::Magenta => Color::Magenta,
+    }
+}
+
+/// A bookmark ribbon hanging from the top edge into the margin by the
+/// gutter, swallow-tailed at its end; in a pane with no margin to hang
+/// it in, a mark at the corner of the running head instead.
+fn draw_ribbon(buf: &mut Buffer, area: Rect, x: u16, w: u16, side: Side, color: Ribbon) {
+    let fg = Style::new().fg(ribbon_color(color));
+    let rx = match side {
+        Side::Right => x.checked_sub(4).filter(|&rx| rx >= area.x),
+        Side::Left | Side::Single => Some(x + w + 2).filter(|&rx| rx + 2 <= area.right()),
+    };
+    let Some(rx) = rx else {
+        let corner = match side {
+            Side::Right => x,
+            Side::Left | Side::Single => x + w - 1,
+        };
+        buf.set_string(corner, area.y + 1, "▍", fg);
+        return;
+    };
+    for dy in 0..3 {
+        buf.set_string(rx, area.y + dy, "██", fg);
+    }
+    buf.set_string(rx, area.y + 3, "▛▜", fg);
 }
 
 fn style_of(t: TextStyle) -> Style {

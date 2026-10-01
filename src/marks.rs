@@ -19,13 +19,81 @@ pub struct Entry {
     pub at: Pos,
     /// Bookmarks, in reading order.
     #[serde(default)]
-    pub marks: Vec<Pos>,
+    pub marks: Vec<Mark>,
     /// Longest row, in columns, as last set for this book.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measure: Option<usize>,
     /// Reading notes, in reading order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
+}
+
+/// A bookmark: where it is, and the colour of its ribbon.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct Mark {
+    pub at: Pos,
+    #[serde(default)]
+    pub color: Ribbon,
+}
+
+// Bookmarks were once kept as bare places; those read as red ribbons.
+impl<'de> Deserialize<'de> for Mark {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Kept {
+            Mark {
+                at: Pos,
+                #[serde(default)]
+                color: Ribbon,
+            },
+            Bare(Pos),
+        }
+        Ok(match Kept::deserialize(d)? {
+            Kept::Mark { at, color } => Mark { at, color },
+            Kept::Bare(at) => Mark {
+                at,
+                color: Ribbon::default(),
+            },
+        })
+    }
+}
+
+/// Colours a bookmark ribbon comes in, in the order `c` steps through them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Ribbon {
+    #[default]
+    Red,
+    Yellow,
+    Green,
+    Cyan,
+    Blue,
+    Magenta,
+}
+
+impl Ribbon {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Red => Self::Yellow,
+            Self::Yellow => Self::Green,
+            Self::Green => Self::Cyan,
+            Self::Cyan => Self::Blue,
+            Self::Blue => Self::Magenta,
+            Self::Magenta => Self::Red,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Red => "red",
+            Self::Yellow => "yellow",
+            Self::Green => "green",
+            Self::Cyan => "cyan",
+            Self::Blue => "blue",
+            Self::Magenta => "magenta",
+        }
+    }
 }
 
 /// A note written in the book.
@@ -92,6 +160,9 @@ pub struct Settings {
     /// How notes are shown, as last chosen with `N`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<NoteDisplay>,
+    /// Colour for new bookmarks: the one last chosen with `c`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ribbon: Option<Ribbon>,
 }
 
 /// Where a note's text is shown on its page.
@@ -171,4 +242,19 @@ pub fn save(book: &str, entry: &Entry) -> Result<()> {
     let mut store = read_store();
     store.books.insert(book.to_string(), entry.clone());
     write_json(&path, &store)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bookmarks_kept_as_bare_places_still_read() {
+        let e: Entry = serde_json::from_str(
+            r#"{"at":{"line":0,"offset":0},"marks":[{"line":3,"offset":1},{"at":{"line":5,"offset":0},"color":"cyan"}]}"#,
+        )
+        .unwrap();
+        let marks: Vec<_> = e.marks.iter().map(|m| (m.at.line, m.color)).collect();
+        assert_eq!(marks, [(3, Ribbon::Red), (5, Ribbon::Cyan)]);
+    }
 }
