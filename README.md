@@ -25,6 +25,7 @@ on from left to right. Elsewhere it shows one page at a time.
 | `n` | write a note on the page |
 | `v` | choose a row (`j` / `k`), then `Enter` to write a note on it |
 | `l` | bookmarks and notes: `Enter` to go, `d` to remove |
+| `N` | notes as footnotes / in the margin / as marks only (remembered) |
 | `g` | contents |
 | `<` / `>` | shorter / longer rows (narrower / wider margins) |
 | `a` | page-turn animation on / off (remembered) |
@@ -51,7 +52,10 @@ on from left to right. Elsewhere it shows one page at a time.
 - **The format is always named** with `--format`; nothing is detected.
 - **Notes are written in the book**: on a page (a pencil `✎` by the running
   head), or on a row (a stroke `▎` in the margin beside it). They are kept
-  with the bookmarks, and listed with them under `l`.
+  with the bookmarks, and listed with them under `l`. Their text is shown as
+  footnotes at the foot of the page (the page then holds less, and the
+  text runs on to the next), in the outer margin beside their row (when
+  the margin is wide enough; `<` makes room), or not at all.
 - **Your place is kept** per book in `~/.local/share/herdbook/marks.json`
   (`$XDG_DATA_HOME` if set), as a position in the text rather than a page
   number, so it survives a change of pane size.

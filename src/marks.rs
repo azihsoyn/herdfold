@@ -85,6 +85,32 @@ pub struct Settings {
     /// Whether page turns are drawn, as last toggled with `a`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub animate: Option<bool>,
+    /// How notes are shown, as last chosen with `N`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<NoteDisplay>,
+}
+
+/// Where a note's text is shown on its page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteDisplay {
+    /// At the foot of the page, under a short rule.
+    #[default]
+    Footnotes,
+    /// In the outer margin, beside the row it is on.
+    Margin,
+    /// Only the pencil and the stroke; the text is read in the list.
+    Marks,
+}
+
+impl NoteDisplay {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Footnotes => Self::Margin,
+            Self::Margin => Self::Marks,
+            Self::Marks => Self::Footnotes,
+        }
+    }
 }
 
 fn data_file(name: &str) -> Option<PathBuf> {

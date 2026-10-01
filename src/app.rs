@@ -14,12 +14,13 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::api::{Call, EventData, PROTOCOL, Request, ResponseResult};
 use crate::doc::Document;
+use crate::doc::{Kind, Line as DocLine, Style as TextStyle};
 use crate::herdr::RightPane;
 use crate::layout::{Layout, Pos};
-use crate::marks::{self, Anchor, Author, Entry, Note};
+use crate::marks::{self, Anchor, Author, Entry, Note, NoteDisplay};
 use crate::server::{ConnId, Hub, Inbound, Server};
 use crate::turn::{Turn, Turning};
-use crate::view::{self, Cmd, PageRow, PageView, Side};
+use crate::view::{self, Cmd, MarginNote, PageRow, PageView, Side};
 
 /// What keys are doing at the moment.
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +76,26 @@ struct Reader {
     unsent_turn: Option<Turn>,
     /// Longest row, in columns.
     measure: usize,
+    /// How notes are shown.
+    note_display: NoteDisplay,
+    /// Bumped whenever notes change, so pages are set again around footnotes.
+    notes_rev: u64,
+    /// What the current layout was set for.
+    laid_for: Option<LaidFor>,
+    /// Width of this pane, for judging the margin.
+    pane_width: u16,
+    /// Whether settings are written to disk (not under test).
+    keep_settings: bool,
+}
+
+/// What a layout depends on besides the document.
+#[derive(Clone, Copy, PartialEq)]
+struct LaidFor {
+    width: usize,
+    height: usize,
+    spread: bool,
+    notes: NoteDisplay,
+    notes_rev: u64,
 }
 
 /// Opens the book. With `spread`, and inside herdr, the right-hand page goes
@@ -92,6 +113,7 @@ pub fn run(
     let settings = marks::settings();
     let measure = starting_measure(measure, entry.measure, settings.measure);
     let animate = animate.or(settings.animate).unwrap_or(true);
+    let note_display = settings.notes.unwrap_or_default();
     let mut reader = Reader {
         layout: Layout::new(&doc, 1, 1),
         doc,
@@ -107,6 +129,11 @@ pub fn run(
         turning: None,
         unsent_turn: None,
         measure,
+        note_display,
+        notes_rev: 0,
+        laid_for: None,
+        pane_width: 0,
+        keep_settings: true,
     };
     let server = if spread { Server::listen().ok() } else { None };
     let mut terminal = ratatui::init();
@@ -144,6 +171,7 @@ impl Reader {
         }
         loop {
             let area = terminal.size()?;
+            self.pane_width = area.width;
             let mut size = (area.width, area.height);
             if let Some((_, w, h)) = self.attached {
                 // Both pages are set to the smaller pane so they match.
@@ -251,10 +279,28 @@ impl Reader {
     }
 
     fn fit(&mut self, (width, height): (usize, usize), spread: bool) {
-        if self.layout.width == width && self.layout.height == height && self.spread == spread {
+        let want = LaidFor {
+            width,
+            height,
+            spread,
+            notes: self.note_display,
+            notes_rev: self.notes_rev,
+        };
+        if self.laid_for == Some(want) {
             return;
         }
-        self.layout = Layout::new(&self.doc, width, height);
+        self.laid_for = Some(want);
+        self.layout = if self.note_display == NoteDisplay::Footnotes {
+            let footnotes: Vec<(Pos, usize)> = self
+                .entry
+                .notes
+                .iter()
+                .map(|n| (n.at, footnote_rows(n, width).len()))
+                .collect();
+            Layout::with_footnotes(&self.doc, width, height, &footnotes)
+        } else {
+            Layout::new(&self.doc, width, height)
+        };
         self.spread = spread;
         self.chapter_pages = self
             .doc
@@ -267,6 +313,18 @@ impl Reader {
                 })
             })
             .collect();
+    }
+
+    /// The notes on page `n`, in reading order.
+    fn notes_on(&self, n: usize) -> Vec<&Note> {
+        self.entry
+            .notes
+            .iter()
+            .filter(|note| match note.anchor {
+                Anchor::Page => self.layout.page_of(note.at) == n,
+                Anchor::Line => self.layout.row_of(n, note.at).is_some(),
+            })
+            .collect()
     }
 
     fn step(&self) -> usize {
@@ -323,6 +381,46 @@ impl Reader {
         {
             rows[pad + i].selected = true;
         }
+        let notes = self.notes_on(n);
+        let mut margin_notes = Vec::new();
+        match self.note_display {
+            NoteDisplay::Footnotes if !notes.is_empty() => {
+                // Footnotes sit at the foot of the page, under a short rule.
+                let foot: Vec<PageRow> = notes
+                    .iter()
+                    .flat_map(|note| footnote_rows(note, self.layout.width))
+                    .collect();
+                let fill = self
+                    .layout
+                    .height
+                    .saturating_sub(rows.len() + foot.len() + 1);
+                rows.extend(std::iter::repeat_n(PageRow::default(), fill));
+                rows.push(PageRow {
+                    spans: vec![crate::doc::Styled {
+                        text: "─".repeat(self.layout.width.min(16)),
+                        style: TextStyle {
+                            dim: true,
+                            ..TextStyle::default()
+                        },
+                    }],
+                    ..PageRow::default()
+                });
+                rows.extend(foot);
+            }
+            NoteDisplay::Margin => {
+                for note in &notes {
+                    let row = match note.anchor {
+                        Anchor::Page => 0,
+                        Anchor::Line => pad + self.layout.row_of(n, note.at).unwrap_or(0),
+                    };
+                    margin_notes.push(MarginNote {
+                        row,
+                        text: format!("{} {}", sign(note), note.text),
+                    });
+                }
+            }
+            NoteDisplay::Footnotes | NoteDisplay::Marks => {}
+        }
         PageView {
             side,
             head,
@@ -341,6 +439,7 @@ impl Reader {
                 .any(|note| note.anchor == Anchor::Page && self.layout.page_of(note.at) == n),
             width: self.layout.width,
             status: (side != Side::Right).then(|| self.status.clone()).flatten(),
+            margin_notes,
         }
     }
 
@@ -378,6 +477,7 @@ impl Reader {
             }
             Cmd::Mark => self.toggle_mark(page),
             Cmd::Animate => self.toggle_animation(),
+            Cmd::NoteDisplay => self.cycle_note_display(),
             // Step from the rows as set, which the pane may hold shorter than the measure.
             Cmd::Wider if self.layout.width < self.measure => {
                 self.status = Some("Rows are already as long as the pane allows".into());
@@ -458,6 +558,7 @@ impl Reader {
                     }
                     Some(&Item::Note(i)) => {
                         self.entry.notes.remove(i);
+                        self.notes_rev += 1;
                         self.status = Some("Note removed".into());
                     }
                     None => {}
@@ -513,6 +614,7 @@ impl Reader {
                         by: Author::Reader,
                         question: None,
                     });
+                    self.notes_rev += 1;
                     self.status = Some("Note kept".into());
                     self.save();
                 }
@@ -568,12 +670,10 @@ impl Reader {
         self.measure = measure.clamp(view::MEASURE_MIN, view::MEASURE_MAX);
         self.entry.measure = Some(self.measure);
         let measure = self.measure;
-        self.status = Some(
-            match marks::update_settings(|s| s.measure = Some(measure)) {
-                Ok(()) => format!("Rows up to {} columns", self.measure),
-                Err(e) => format!("Could not save the setting: {e}"),
-            },
-        );
+        self.status = Some(match self.update_settings(|s| s.measure = Some(measure)) {
+            Ok(()) => format!("Rows up to {} columns", self.measure),
+            Err(e) => format!("Could not save the setting: {e}"),
+        });
         // Last, so a failure to keep the place shows over the status above.
         self.save();
     }
@@ -583,13 +683,29 @@ impl Reader {
         self.animate = !self.animate;
         self.turning = None;
         let animate = self.animate;
-        self.status = Some(
-            match marks::update_settings(|s| s.animate = Some(animate)) {
-                Ok(()) if animate => "Page turns drawn".into(),
-                Ok(()) => "Page turns instant".into(),
-                Err(e) => format!("Could not save the setting: {e}"),
+        self.status = Some(match self.update_settings(|s| s.animate = Some(animate)) {
+            Ok(()) if animate => "Page turns drawn".into(),
+            Ok(()) => "Page turns instant".into(),
+            Err(e) => format!("Could not save the setting: {e}"),
+        });
+    }
+
+    /// Footnotes, margin, marks only, and round again; kept for every book.
+    fn cycle_note_display(&mut self) {
+        self.note_display = self.note_display.next();
+        let display = self.note_display;
+        let narrow = view::margin_room(self.pane_width, self.layout.width) < view::MARGIN_NOTE_MIN;
+        self.status = Some(match self.update_settings(|s| s.notes = Some(display)) {
+            Ok(()) => match display {
+                NoteDisplay::Footnotes => "Notes as footnotes".into(),
+                NoteDisplay::Margin if narrow => {
+                    "Notes in the margin: too narrow here, shorten rows with <".into()
+                }
+                NoteDisplay::Margin => "Notes in the margin".into(),
+                NoteDisplay::Marks => "Notes as marks only (l to read them)".into(),
             },
-        );
+            Err(e) => format!("Could not save the setting: {e}"),
+        });
     }
 
     /// A bookmark covers what is open: one page, or both pages of a spread.
@@ -608,6 +724,14 @@ impl Reader {
             self.status = Some("Bookmark removed".into());
         }
         self.save();
+    }
+
+    fn update_settings(&self, change: impl FnOnce(&mut marks::Settings)) -> Result<()> {
+        if self.keep_settings {
+            marks::update_settings(change)
+        } else {
+            Ok(())
+        }
     }
 
     fn save(&mut self) {
@@ -636,11 +760,7 @@ impl Reader {
             item: Item::Mark(i),
         });
         let notes = self.entry.notes.iter().enumerate().map(|(i, n)| {
-            let sign = match (n.by, n.anchor) {
-                (Author::Agent, _) => "✦",
-                (Author::Reader, Anchor::Page) => "✎",
-                (Author::Reader, Anchor::Line) => "▎",
-            };
+            let sign = sign(n);
             let label = match n.anchor {
                 Anchor::Page => format!("{sign} {}", n.text),
                 Anchor::Line => format!("{sign} {}  — {}", n.text, self.row_text(n.at)),
@@ -730,6 +850,33 @@ impl Reader {
     }
 }
 
+/// The mark a note is listed and shown with.
+fn sign(note: &Note) -> &'static str {
+    match (note.by, note.anchor) {
+        (Author::Agent, _) => "✦",
+        (Author::Reader, Anchor::Page) => "✎",
+        (Author::Reader, Anchor::Line) => "▎",
+    }
+}
+
+/// A note set as footnote rows `width` wide: its mark, then its text in
+/// italics, wrapped rows hung after the mark.
+fn footnote_rows(note: &Note, width: usize) -> Vec<PageRow> {
+    let mut line = DocLine::new(format!("{} {}", sign(note), note.text), Kind::Body);
+    line.hang = Some(2);
+    line.style = TextStyle {
+        italic: true,
+        ..TextStyle::default()
+    };
+    crate::layout::set(0, &line, width)
+        .into_iter()
+        .map(|r| PageRow {
+            spans: r.spans,
+            ..PageRow::default()
+        })
+        .collect()
+}
+
 /// A one-line box near the foot of the pane for writing a note.
 fn draw_input(f: &mut Frame, title: &str, text: &str) {
     let area = f.area();
@@ -756,7 +903,6 @@ fn draw_input(f: &mut Frame, title: &str, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc::{Kind, Line as DocLine};
 
     /// A reader over `lines`, one row per line, `height` rows a page.
     fn reader(lines: &[&str], height: usize) -> Reader {
@@ -779,6 +925,11 @@ mod tests {
             turning: None,
             unsent_turn: None,
             measure: view::MEASURE,
+            note_display: NoteDisplay::Marks,
+            notes_rev: 0,
+            laid_for: None,
+            pane_width: 80,
+            keep_settings: false,
         };
         r.fit((20, height), false);
         r
@@ -827,6 +978,47 @@ mod tests {
             rows.iter().map(|r| r.marker).collect::<Vec<_>>(),
             [false, true, false]
         );
+    }
+
+    fn texts(v: &PageView) -> Vec<String> {
+        v.rows
+            .iter()
+            .map(|r| r.spans.iter().map(|s| s.text.as_str()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn footnotes_sit_at_the_foot_and_push_text_on() {
+        let mut r = reader(&["one", "two", "three", "four", "five"], 5);
+        keys(&mut r, &["N"]);
+        assert_eq!(r.note_display, NoteDisplay::Footnotes);
+        keys(&mut r, &["v", "j", "enter", "x", "enter"]);
+        r.fit((20, 5), false);
+        // Five rows: three of text, the rule and the note.
+        assert_eq!(
+            texts(&r.views().0),
+            ["one", "two", "three", "────────────────", "▎ x"]
+        );
+        keys(&mut r, &["space"]);
+        assert_eq!(texts(&r.views().0)[0], "four");
+    }
+
+    #[test]
+    fn margin_notes_name_their_row() {
+        let mut r = reader(&["one", "two", "three"], 3);
+        keys(
+            &mut r,
+            &["N", "N", "v", "j", "enter", "x", "enter", "n", "p", "enter"],
+        );
+        assert_eq!(r.note_display, NoteDisplay::Margin);
+        let notes: Vec<_> = r
+            .views()
+            .0
+            .margin_notes
+            .into_iter()
+            .map(|m| (m.row, m.text))
+            .collect();
+        assert_eq!(notes, [(0, "✎ p".to_string()), (1, "▎ x".to_string())]);
     }
 
     #[test]

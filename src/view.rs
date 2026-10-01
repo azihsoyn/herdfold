@@ -61,6 +61,25 @@ pub struct PageView {
     pub width: usize,
     /// A one-off message shown in place of the running head.
     pub status: Option<String>,
+    /// Notes to set in the outer margin, beside their rows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub margin_notes: Vec<MarginNote>,
+}
+
+/// A note shown in the margin, from row `row` (counted as in `rows`) down.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MarginNote {
+    pub row: usize,
+    pub text: String,
+}
+
+/// Narrowest margin a note is set in; below this only the marks show.
+pub const MARGIN_NOTE_MIN: usize = 12;
+
+/// Columns of outer margin a pane of `width` leaves for notes beside a
+/// column of `column` (two kept clear for the stroke and a gap).
+pub fn margin_room(width: u16, column: usize) -> usize {
+    ((width as usize).saturating_sub(column) / 2).saturating_sub(3)
 }
 
 fn is_false(b: &bool) -> bool {
@@ -102,6 +121,8 @@ pub enum Cmd {
     Select,
     /// The list of bookmarks and notes.
     Shelf,
+    /// Change how notes are shown.
+    NoteDisplay,
     /// Remove the bookmark or note chosen in the list.
     Delete,
 }
@@ -152,6 +173,7 @@ pub fn cmd_of(key: &str) -> Option<Cmd> {
         "n" => Cmd::NotePage,
         "v" => Cmd::Select,
         "l" => Cmd::Shelf,
+        "N" => Cmd::NoteDisplay,
         "d" => Cmd::Delete,
         _ => return None,
     })
@@ -236,6 +258,8 @@ pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
         .collect();
     Paragraph::new(lines).render(Rect::new(x, area.y + TOP, w, text_h), buf);
 
+    draw_margin_notes(buf, area, x, w, text_h, v);
+
     // A row with a note gets a mark in the margin, like a highlighter's stroke.
     if x >= area.x + 2 {
         for (i, r) in v.rows.iter().take(text_h as usize).enumerate() {
@@ -248,6 +272,36 @@ pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
 
     let footer = footer(v, w as usize);
     Paragraph::new(footer).render(Rect::new(x, area.y + area.height - 2, w, 1), buf);
+}
+
+/// Sets margin notes in the outer margin, each from its row down, below the
+/// one before when they would meet. Too narrow a margin shows none.
+fn draw_margin_notes(buf: &mut Buffer, area: Rect, x: u16, w: u16, text_h: u16, v: &PageView) {
+    let room = margin_room(area.width, w as usize);
+    if v.margin_notes.is_empty() || room < MARGIN_NOTE_MIN {
+        return;
+    }
+    let left = match v.side {
+        Side::Left => area.x + 1,
+        Side::Right | Side::Single => x + w + 3,
+    };
+    let style = Style::new().add_modifier(Modifier::ITALIC);
+    let mut next_free = 0;
+    for note in &v.margin_notes {
+        let mut line = crate::doc::Line::new(note.text.as_str(), crate::doc::Kind::Body);
+        // Wrapped rows hang after the note's mark.
+        line.hang = Some(2);
+        let mut row = note.row.max(next_free);
+        for r in crate::layout::set(0, &line, room) {
+            if row >= text_h as usize {
+                return;
+            }
+            let y = area.y + TOP + row as u16;
+            buf.set_stringn(left, y, &r.text, room, style);
+            row += 1;
+        }
+        next_free = row + 1;
+    }
 }
 
 fn style_of(t: TextStyle) -> Style {

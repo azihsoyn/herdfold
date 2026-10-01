@@ -47,6 +47,18 @@ struct Span {
 
 impl Layout {
     pub fn new(doc: &Document, width: usize, height: usize) -> Self {
+        Self::with_footnotes(doc, width, height, &[])
+    }
+
+    /// Sets the document leaving room at the foot of each page for the
+    /// footnotes on it: `(where, rows)` for each note, in any order. The
+    /// first footnote on a page also takes a row for the rule above it.
+    pub fn with_footnotes(
+        doc: &Document,
+        width: usize,
+        height: usize,
+        footnotes: &[(Pos, usize)],
+    ) -> Self {
         let width = width.max(1);
         let height = height.max(1);
         let mut rows: Vec<Row> = doc
@@ -63,7 +75,13 @@ impl Layout {
                 kind: Kind::Body,
             });
         }
-        let pages = paginate(&rows, height, &chapter_breaks(doc));
+        // Rows of footnote each row carries: the notes on it.
+        let mut extra = vec![0; rows.len()];
+        for &(at, n) in footnotes {
+            let i = rows.partition_point(|r| r.pos <= at).saturating_sub(1);
+            extra[i] += n;
+        }
+        let pages = paginate(&rows, height, &chapter_breaks(doc), &extra);
         Self {
             width,
             height,
@@ -139,9 +157,15 @@ fn chapter_breaks(doc: &Document) -> HashSet<usize> {
 /// a chapter always opens a page (set a quarter of the way down, as a book
 /// sets its chapter openings), and a heading is never left as a page's last
 /// row, cut off from what it heads.
-fn paginate(rows: &[Row], height: usize, breaks: &HashSet<usize>) -> Vec<Span> {
+fn paginate(rows: &[Row], height: usize, breaks: &HashSet<usize>, extra: &[usize]) -> Vec<Span> {
     let opens = |r: &Row| r.pos.offset == 0 && breaks.contains(&r.pos.line);
     let drop = if height >= 12 { height / 4 } else { 0 };
+    // Footnote rows row `k` brings onto a page already holding `held`.
+    let cost = |k: usize, held: usize| match (extra[k], held) {
+        (0, _) => 0,
+        (n, 0) => n + 1,
+        (n, _) => n,
+    };
     let mut pages = Vec::new();
     let mut i = 0;
     while i < rows.len() {
@@ -153,12 +177,20 @@ fn paginate(rows: &[Row], height: usize, breaks: &HashSet<usize>) -> Vec<Span> {
         }
         let pad = if opens(&rows[i]) { drop } else { 0 };
         let room = height - pad;
+        let mut held = cost(i, 0);
         let mut end = i + 1;
-        while end < rows.len() && end - i < room && !opens(&rows[end]) {
+        let mut full = false;
+        while end < rows.len() && !opens(&rows[end]) {
+            let more = cost(end, held);
+            if end + 1 - i + held + more > room {
+                full = true;
+                break;
+            }
+            held += more;
             end += 1;
         }
         // Pull a heading (and the rule under it) over to the next page.
-        if end - i == room && end < rows.len() {
+        if full {
             let mut k = end;
             while k > i + 1 && rows[k - 1].kind == Kind::Rule {
                 k -= 1;
@@ -201,7 +233,7 @@ fn can_break(before: char, after: char) -> bool {
 }
 
 /// Sets line `i` as rows of `width` columns, its gutter and styles applied.
-fn set(i: usize, line: &Line, width: usize) -> Vec<Row> {
+pub fn set(i: usize, line: &Line, width: usize) -> Vec<Row> {
     let w = width.saturating_sub(line.gutter.width()).max(1);
     let gutter = (!line.gutter.is_empty()).then(|| Styled {
         text: line.gutter.clone(),
@@ -574,6 +606,18 @@ mod tests {
         let l = Layout::new(&d, 10, 3);
         assert_eq!(l.page(0).len(), 2);
         assert_eq!(l.page(1)[0].text, "H");
+    }
+
+    #[test]
+    fn footnotes_take_room_from_their_page() {
+        let d = doc(&["1", "2", "3", "4", "5"]);
+        // A two-row note on row "2": it and its rule take three of five rows.
+        let l = Layout::with_footnotes(&d, 10, 5, &[(Pos { line: 1, offset: 0 }, 2)]);
+        let firsts: Vec<_> = (0..l.page_count())
+            .map(|n| l.page(n)[0].text.as_str())
+            .collect();
+        assert_eq!(firsts, ["1", "3"]);
+        assert_eq!(l.page(0).len(), 2);
     }
 
     #[test]
