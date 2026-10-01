@@ -10,7 +10,7 @@ use crossterm::event::{self, Event};
 use ratatui::layout::{Constraint, Flex, Layout as Split, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
@@ -1094,7 +1094,7 @@ impl Reader {
     ) {
         let area = f.area();
         let width = area.width.saturating_sub(4).min(72);
-        let height = area.height.saturating_sub(4).min(entries.len() as u16 + 2);
+        let height = view::panel_height(entries.len() as u16, 0).min(area.height.saturating_sub(2));
         let [row] = Split::vertical([Constraint::Length(height)])
             .flex(Flex::Center)
             .areas(area);
@@ -1126,16 +1126,14 @@ impl Reader {
                 ]))
             })
             .collect();
-        let list = List::new(items)
-            .block(view::panel(title, hint))
-            .highlight_style(
-                Style::new()
-                    .bg(ratatui::style::Color::Cyan)
-                    .fg(ratatui::style::Color::Black),
-            );
+        let room = view::draw_panel(f.buffer_mut(), popup, title, hint, 0);
+        let list = List::new(items).style(view::panel_style()).highlight_style(
+            Style::new()
+                .bg(ratatui::style::Color::Cyan)
+                .fg(ratatui::style::Color::Black),
+        );
         let mut state = ListState::default().with_selected(Some(sel));
-        f.render_widget(Clear, popup);
-        f.render_stateful_widget(list, popup, &mut state);
+        f.render_stateful_widget(list, room, &mut state);
     }
 }
 
@@ -1194,7 +1192,7 @@ const KEYS: &[(&str, &str)] = &[
 fn draw_help(f: &mut Frame) {
     let area = f.area();
     let width = area.width.saturating_sub(4).min(56);
-    let height = area.height.saturating_sub(2).min(KEYS.len() as u16 + 2);
+    let height = view::panel_height(KEYS.len() as u16, 1).min(area.height);
     let [row] = Split::vertical([Constraint::Length(height)])
         .flex(Flex::Center)
         .areas(area);
@@ -1205,14 +1203,13 @@ fn draw_help(f: &mut Frame) {
         .iter()
         .map(|(k, what)| {
             Line::from(vec![
-                Span::styled(format!(" {k:<9}"), view::key_style()),
+                Span::styled(format!("{k:<9}"), view::key_style()),
                 Span::raw(*what),
             ])
         })
         .collect();
-    let block = view::panel("Keys", "any key to close");
-    f.render_widget(Clear, popup);
-    f.render_widget(Paragraph::new(lines).block(block), popup);
+    let room = view::draw_panel(f.buffer_mut(), popup, "Keys", "any key to close", 1);
+    f.render_widget(Paragraph::new(lines).style(view::panel_style()), room);
 }
 
 /// Tips, one shown each time a book opens.
@@ -1257,17 +1254,16 @@ fn draw_tip(f: &mut Frame, index: usize, hide: bool) {
     let rows: Vec<Line> = crate::layout::set(0, &tip, inner)
         .into_iter()
         .map(|r| {
-            let mut spans = vec![Span::raw(" ")];
-            spans.extend(
+            Line::from(
                 r.spans
                     .into_iter()
-                    .map(|s| Span::styled(s.text, view::style_of(s.style))),
-            );
-            Line::from(spans)
+                    .map(|s| Span::styled(s.text, view::style_of(s.style)))
+                    .collect::<Vec<_>>(),
+            )
         })
         .collect();
-    // A blank row, the tip, a blank row, the tick box, and the frame.
-    let height = (rows.len() as u16 + 5).min(area.height);
+    // The tip, a blank row and the tick box, inside the panel.
+    let height = view::panel_height(rows.len() as u16 + 2, 1).min(area.height);
     let [row] = Split::vertical([Constraint::Length(height)])
         .flex(Flex::Center)
         .areas(area);
@@ -1275,42 +1271,46 @@ fn draw_tip(f: &mut Frame, index: usize, hide: bool) {
         .flex(Flex::Center)
         .areas(row);
     let dim = Style::new().fg(ratatui::style::Color::Indexed(245));
-    let mut lines: Vec<Line> = vec![Line::raw("")];
-    lines.extend(rows);
+    let mut lines: Vec<Line> = rows;
     lines.push(Line::raw(""));
     let tick = if hide { "[x]" } else { "[ ]" };
-    let count = format!("{}/{} ", index + 1, TIPS.len());
-    let label = format!(" {tick} Don't show tips again");
-    let gap = (width as usize).saturating_sub(2 + label.width() + count.width());
+    let count = format!("{}/{}", index + 1, TIPS.len());
+    let label = format!("{tick} Don't show tips again");
+    let gap = inner.saturating_sub(label.width() + count.width());
     lines.push(Line::from(vec![
-        Span::styled(format!(" {tick}"), view::key_style()),
+        Span::styled(tick, view::key_style()),
         Span::raw(" Don't show tips again"),
         Span::raw(" ".repeat(gap)),
         Span::styled(count, dim),
     ]));
-    let block = view::panel("Tip", "Enter close · ← → more · Space don't show again");
-    f.render_widget(Clear, popup);
-    f.render_widget(Paragraph::new(lines).block(block), popup);
+    let room = view::draw_panel(
+        f.buffer_mut(),
+        popup,
+        "Tip",
+        "Enter close · ← → more · Space don't show again",
+        1,
+    );
+    f.render_widget(Paragraph::new(lines).style(view::panel_style()), room);
 }
 
 /// A one-line box near the foot of the pane for writing a note.
 fn draw_input(f: &mut Frame, title: &str, text: &str) {
     let area = f.area();
     let width = area.width.saturating_sub(4).min(80);
+    let height = view::panel_height(1, 0);
     let x = area.x + (area.width - width) / 2;
-    let y = area.bottom().saturating_sub(6);
-    let box_area = Rect::new(x, y, width, 3);
-    let room = width.saturating_sub(3) as usize;
+    let y = area.bottom().saturating_sub(height + 3);
+    let box_area = Rect::new(x, y, width, height).intersection(area);
+    let room = view::draw_panel(f.buffer_mut(), box_area, title, "Enter keep · Esc drop", 0);
     // Keep the end of the text, where the writing is, in view.
     let mut shown = text.to_string();
-    while shown.width() > room.saturating_sub(1) {
+    while shown.width() + 1 > room.width as usize && !shown.is_empty() {
         shown.remove(0);
     }
-    let block = view::panel(title, "Enter keep · Esc drop");
-    f.render_widget(Clear, box_area);
     f.render_widget(
-        Paragraph::new(Line::from(vec![Span::raw(shown), Span::raw("▏")])).block(block),
-        box_area,
+        Paragraph::new(Line::from(vec![Span::raw(shown), Span::raw("▏")]))
+            .style(view::panel_style()),
+        room,
     );
 }
 

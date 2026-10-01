@@ -333,23 +333,43 @@ pub fn key_style() -> Style {
     Style::new().fg(PANEL_EDGE).add_modifier(Modifier::BOLD)
 }
 
-/// A panel's frame: rounded, edged in the accent colour, titled in bold,
-/// with `hint` (what the keys do here) along its foot.
-pub fn panel(title: &str, hint: &str) -> ratatui::widgets::Block<'static> {
-    let mut block = ratatui::widgets::Block::bordered()
+/// A panel's frame: rounded and edged in the accent colour. Nothing is
+/// written on the frame itself, so its edge stays clean.
+pub fn panel_block() -> ratatui::widgets::Block<'static> {
+    ratatui::widgets::Block::bordered()
         .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(Style::new().fg(PANEL_EDGE))
-        .style(panel_style());
-    if !title.is_empty() {
-        block = block.title(Span::styled(format!(" {title} "), key_style()));
+        .style(panel_style())
+}
+
+/// Draws a panel over `area`: the frame, `title` on the first row inside
+/// and `hint` (what the keys do here) on the last, each `gap` blank rows
+/// from what lies between. Returns the room left between them.
+pub fn draw_panel(buf: &mut Buffer, area: Rect, title: &str, hint: &str, gap: u16) -> Rect {
+    ratatui::widgets::Clear.render(area, buf);
+    let block = panel_block();
+    let inner = block.inner(area);
+    block.render(area, buf);
+    let x = inner.x + 1;
+    let w = inner.width.saturating_sub(2);
+    let mut top = inner.y;
+    let mut bottom = inner.bottom();
+    if !title.is_empty() && top < bottom {
+        buf.set_stringn(x, top, title, w as usize, key_style());
+        top = (top + 1 + gap).min(bottom);
     }
-    if !hint.is_empty() {
-        block = block.title_bottom(Span::styled(
-            format!(" {hint} "),
-            Style::new().fg(Color::Indexed(245)),
-        ));
+    if !hint.is_empty() && bottom > top {
+        bottom -= 1;
+        let grey = Style::new().fg(Color::Indexed(245));
+        buf.set_stringn(x, bottom, hint, w as usize, grey);
+        bottom = bottom.saturating_sub(gap).max(top);
     }
-    block
+    Rect::new(x, top, w, bottom - top)
+}
+
+/// Rows a panel needs around `content` rows: frame, title, hint and gaps.
+pub fn panel_height(content: u16, gap: u16) -> u16 {
+    content + 4 + 2 * gap
 }
 
 /// Dims the page behind a panel, so the panel reads as in front of it.
@@ -375,7 +395,7 @@ fn draw_snackbar(buf: &mut Buffer, area: Rect, text: &str) {
     let frame = Rect::new(x, y, w, 3);
     ratatui::widgets::Clear.render(frame, buf);
     Paragraph::new(Line::raw(format!(" {text} ")))
-        .block(panel("", ""))
+        .block(panel_block())
         .render(frame, buf);
 }
 
