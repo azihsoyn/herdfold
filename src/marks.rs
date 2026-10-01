@@ -1,4 +1,4 @@
-//! Where each book was left, and the bookmarks in it, kept in
+//! Where each book was left, its bookmarks and reading notes, kept in
 //! `$XDG_DATA_HOME/<name>/marks.json` (default `~/.local/share/<name>/`),
 //! and the reader's own settings beside them in `settings.json`.
 
@@ -7,6 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::NAME;
@@ -22,6 +23,51 @@ pub struct Entry {
     /// Longest row, in columns, as last set for this book.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measure: Option<usize>,
+    /// Reading notes, in reading order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Note>,
+}
+
+/// A note written in the book.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Note {
+    /// The start of the page, or of the row, the note is about.
+    pub at: Pos,
+    #[serde(default)]
+    pub anchor: Anchor,
+    pub text: String,
+    #[serde(default)]
+    pub by: Author,
+    /// For an agent's answer, the question it answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+}
+
+/// What a note is attached to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Anchor {
+    /// A page, like a bookmark with something written on it.
+    #[default]
+    Page,
+    /// One row, like a highlighter mark with a note beside it.
+    Line,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Author {
+    #[default]
+    Reader,
+    Agent,
+}
+
+impl Entry {
+    /// Adds a note, keeping notes in reading order.
+    pub fn add_note(&mut self, note: Note) {
+        let i = self.notes.partition_point(|n| n.at <= note.at);
+        self.notes.insert(i, note);
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]

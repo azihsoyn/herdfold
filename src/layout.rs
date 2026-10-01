@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -12,7 +13,9 @@ use crate::doc::{Document, Kind, Line, Style, Styled};
 /// A place in the source text: a line and a character offset into it.
 /// Bookmarks are kept as these rather than page numbers, because the page a
 /// sentence lands on changes whenever the page size does.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 pub struct Pos {
     pub line: usize,
     pub offset: usize,
@@ -93,6 +96,16 @@ impl Layout {
         self.pages
             .partition_point(|p| p.start <= row)
             .saturating_sub(1)
+    }
+
+    /// Index, within page `n`, of the row that holds `pos`, if it is on that page.
+    pub fn row_of(&self, n: usize, pos: Pos) -> Option<usize> {
+        if self.page_of(pos) != n {
+            return None;
+        }
+        let rows = self.page(n);
+        let i = rows.partition_point(|r| r.pos <= pos);
+        (i > 0).then(|| i - 1)
     }
 
     /// Where page `n` begins in the source.

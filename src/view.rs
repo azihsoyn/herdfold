@@ -54,15 +54,28 @@ pub struct PageView {
     pub number: usize,
     pub total: usize,
     pub marked: bool,
+    /// The page has a reading note on it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub noted: bool,
     /// Width the rows were set to; the column is centred on it.
     pub width: usize,
     /// A one-off message shown in place of the running head.
-    pub note: Option<String>,
+    pub status: Option<String>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PageRow {
     pub spans: Vec<Styled>,
+    /// A note is attached to this row; a mark is drawn beside it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub marker: bool,
+    /// The row under the cursor while choosing a row.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub selected: bool,
 }
 
 /// What a key asks for, in either pane.
@@ -83,6 +96,14 @@ pub enum Cmd {
     Narrower,
     /// Draw page turns, or stop drawing them.
     Animate,
+    /// Write a note on the page.
+    NotePage,
+    /// Choose a row, to write a note on it.
+    Select,
+    /// The list of bookmarks and notes.
+    Shelf,
+    /// Remove the bookmark or note chosen in the list.
+    Delete,
 }
 
 /// A key press under herdr's key names (`space`, `esc`, `ctrl+c`, `b`, ...),
@@ -102,6 +123,9 @@ pub fn key_name(key: KeyEvent) -> Option<String> {
         KeyCode::Right => "right".into(),
         KeyCode::PageUp => "pageup".into(),
         KeyCode::PageDown => "pagedown".into(),
+        KeyCode::Backspace => "backspace".into(),
+        KeyCode::Delete => "delete".into(),
+        KeyCode::Tab => "tab".into(),
         _ => return None,
     };
     Some(if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -125,6 +149,10 @@ pub fn cmd_of(key: &str) -> Option<Cmd> {
         ">" => Cmd::Wider,
         "<" => Cmd::Narrower,
         "a" => Cmd::Animate,
+        "n" => Cmd::NotePage,
+        "v" => Cmd::Select,
+        "l" => Cmd::Shelf,
+        "d" => Cmd::Delete,
         _ => return None,
     })
 }
@@ -157,9 +185,15 @@ pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
     let (x, w) = column(area, v.width);
     let dim = Style::new().add_modifier(Modifier::DIM);
 
-    // Running head on the outer edge; the ribbon, when bookmarked, by the gutter.
-    let ribbon = if v.marked { "▍" } else { "" };
-    let (head, style) = match &v.note {
+    // Running head on the outer edge; the ribbon (bookmark) and the pencil
+    // (a note on the page) by the gutter.
+    let ribbon = match (v.marked, v.noted) {
+        (true, true) => "✎ ▍",
+        (true, false) => "▍",
+        (false, true) => "✎",
+        (false, false) => "",
+    };
+    let (head, style) = match &v.status {
         Some(n) => (n.as_str(), Style::new()),
         None => (v.head.as_str(), dim.add_modifier(Modifier::ITALIC)),
     };
@@ -186,15 +220,31 @@ pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
         .iter()
         .take(text_h as usize)
         .map(|r| {
-            Line::from(
-                r.spans
-                    .iter()
-                    .map(|s| Span::styled(s.text.as_str(), style_of(s.style)))
-                    .collect::<Vec<_>>(),
-            )
+            let mut spans: Vec<Span> = r
+                .spans
+                .iter()
+                .map(|s| Span::styled(s.text.as_str(), style_of(s.style)))
+                .collect();
+            if r.selected {
+                // Fill the row so the cursor reads as a bar, even on a blank row.
+                let used: usize = r.spans.iter().map(|s| s.text.width()).sum();
+                spans.push(Span::raw(" ".repeat((w as usize).saturating_sub(used))));
+                return Line::from(spans).patch_style(Modifier::REVERSED);
+            }
+            Line::from(spans)
         })
         .collect();
     Paragraph::new(lines).render(Rect::new(x, area.y + TOP, w, text_h), buf);
+
+    // A row with a note gets a mark in the margin, like a highlighter's stroke.
+    if x >= area.x + 2 {
+        for (i, r) in v.rows.iter().take(text_h as usize).enumerate() {
+            if r.marker {
+                let y = area.y + TOP + i as u16;
+                buf[(x - 2, y)].set_symbol("▎").set_fg(Color::Yellow);
+            }
+        }
+    }
 
     let footer = footer(v, w as usize);
     Paragraph::new(footer).render(Rect::new(x, area.y + area.height - 2, w, 1), buf);

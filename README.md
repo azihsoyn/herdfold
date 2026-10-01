@@ -22,7 +22,10 @@ on from left to right. Elsewhere it shows one page at a time.
 | `Space` / `→` | turn the page |
 | `b` / `←` | turn back |
 | `m` | bookmark what is open (again to remove) |
-| `g` | contents: chapters, then bookmarks |
+| `n` | write a note on the page |
+| `v` | choose a row (`j` / `k`), then `Enter` to write a note on it |
+| `l` | bookmarks and notes: `Enter` to go, `d` to remove |
+| `g` | contents |
 | `<` / `>` | shorter / longer rows (narrower / wider margins) |
 | `a` | page-turn animation on / off (remembered) |
 | `q` / `Esc` | close the book (`Esc` closes the contents first, if open) |
@@ -46,6 +49,9 @@ on from left to right. Elsewhere it shows one page at a time.
 - **Chapters come only from the input**: an EPUB's table of contents, Markdown
   headings, the files of a diff. Plain text has none, and none are guessed.
 - **The format is always named** with `--format`; nothing is detected.
+- **Notes are written in the book**: on a page (a pencil `✎` by the running
+  head), or on a row (a stroke `▎` in the margin beside it). They are kept
+  with the bookmarks, and listed with them under `l`.
 - **Your place is kept** per book in `~/.local/share/herdbook/marks.json`
   (`$XDG_DATA_HOME` if set), as a position in the text rather than a page
   number, so it survives a change of pane size.
