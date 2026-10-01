@@ -62,7 +62,8 @@ pub struct PageView {
     pub noted: bool,
     /// Width the rows were set to; the column is centred on it.
     pub width: usize,
-    /// A one-off message shown in place of the running head.
+    /// A passing message, shown as a snackbar at the bottom right of the
+    /// book: on the right page of a spread, else on the only one.
     pub status: Option<String>,
     /// Notes to set in the outer margin, beside their rows.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -132,6 +133,8 @@ pub enum Cmd {
     Color,
     /// The keys, listed.
     Help,
+    /// A tip on using the reader.
+    Tip,
     /// Remove the bookmark or note chosen in the list.
     Delete,
 }
@@ -186,6 +189,7 @@ pub fn cmd_of(key: &str) -> Option<Cmd> {
         "?" => Cmd::Ask,
         "c" => Cmd::Color,
         "h" | "H" => Cmd::Help,
+        "T" => Cmd::Tip,
         "d" => Cmd::Delete,
         _ => return None,
     })
@@ -222,10 +226,7 @@ pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
     // Running head on the outer edge; the pencil (a note on the page) by
     // the gutter.
     let ribbon = if v.noted { "✎" } else { "" };
-    let (head, style) = match &v.status {
-        Some(n) => (n.as_str(), Style::new()),
-        None => (v.head.as_str(), dim.add_modifier(Modifier::ITALIC)),
-    };
+    let (head, style) = (v.head.as_str(), dim.add_modifier(Modifier::ITALIC));
     let room = (w as usize).saturating_sub(2);
     let head = fit(head, room);
     let gap = " ".repeat((w as usize).saturating_sub(head.width() + ribbon.width()));
@@ -266,6 +267,9 @@ pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
     Paragraph::new(lines).render(Rect::new(x, area.y + TOP, w, text_h), buf);
 
     draw_margin_notes(buf, area, x, w, text_h, v);
+    if let Some(text) = &v.status {
+        draw_snackbar(buf, area, text);
+    }
     if let Some(color) = v.ribbon {
         draw_ribbon(buf, area, x, w, v.side, color);
     }
@@ -312,6 +316,28 @@ fn draw_margin_notes(buf: &mut Buffer, area: Rect, x: u16, w: u16, text_h: u16, 
         }
         next_free = row + 1;
     }
+}
+
+/// A message in a small frame at the bottom right of the pane, above the
+/// footer, as herdr shows its notifications.
+fn draw_snackbar(buf: &mut Buffer, area: Rect, text: &str) {
+    let room = (area.width as usize).saturating_sub(6);
+    if room < 8 || area.height < 8 {
+        return;
+    }
+    let text = fit(text, room.min(60));
+    let w = text.width() as u16 + 4;
+    let x = area.right() - w - 1;
+    let y = area.bottom() - 6;
+    let frame = Rect::new(x, y, w, 3);
+    ratatui::widgets::Clear.render(frame, buf);
+    Paragraph::new(Line::raw(format!(" {text} ")))
+        .block(
+            ratatui::widgets::Block::bordered()
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .border_style(Style::new().add_modifier(Modifier::DIM)),
+        )
+        .render(frame, buf);
 }
 
 pub fn ribbon_color(r: Ribbon) -> Color {

@@ -33,6 +33,11 @@ enum Mode {
     Reading,
     /// The keys, listed.
     Help,
+    /// A tip, with whether "don't show again" is ticked.
+    Tip {
+        index: usize,
+        hide: bool,
+    },
     /// The chapter list, with the selected row.
     Contents(usize),
     /// Bookmarks and notes, with the selected row.
@@ -163,7 +168,12 @@ pub fn run(
     // writes its answers back here.
     let server = Server::listen().ok();
     reader.socket = server.as_ref().map(|s| s.path.clone());
-    reader.say("h for the keys".into());
+    // A tip greets the book, a different one each time, until switched off.
+    if settings.tips != Some(false) {
+        let index = settings.next_tip.unwrap_or(0) % TIPS.len();
+        reader.mode = Mode::Tip { index, hide: false };
+        let _ = reader.update_settings(|s| s.next_tip = Some(index + 1));
+    }
     let mut terminal = ratatui::init();
     let result = reader.run(&mut terminal, server.as_ref(), spread);
     ratatui::restore();
@@ -498,7 +508,8 @@ impl Reader {
                 .iter()
                 .any(|note| note.anchor == Anchor::Page && self.layout.page_of(note.at) == n),
             width: self.layout.width,
-            status: (side != Side::Right).then(|| self.toast()).flatten(),
+            // The snackbar sits at the bottom right of the book.
+            status: (side != Side::Left).then(|| self.toast()).flatten(),
             margin_notes,
         }
     }
@@ -523,6 +534,10 @@ impl Reader {
             self.write(key);
             return false;
         }
+        if let Mode::Tip { index, hide } = self.mode {
+            self.tip_key(key, index, hide);
+            return false;
+        }
         let Some(cmd) = view::cmd_of(key) else {
             return false;
         };
@@ -536,8 +551,34 @@ impl Reader {
                 self.mode = Mode::Reading;
                 false
             }
-            Mode::Writing { .. } => false,
+            Mode::Writing { .. } | Mode::Tip { .. } => false,
         }
+    }
+
+    /// A key on the tip: Enter or Esc to close, arrows for other tips,
+    /// Space to tick "don't show again".
+    fn tip_key(&mut self, key: &str, index: usize, hide: bool) {
+        let n = TIPS.len();
+        self.mode = match key {
+            "right" | "l" | "tab" => Mode::Tip {
+                index: (index + 1) % n,
+                hide,
+            },
+            "left" | "h" => Mode::Tip {
+                index: (index + n - 1) % n,
+                hide,
+            },
+            "space" | "x" => Mode::Tip { index, hide: !hide },
+            "enter" | "esc" | "q" | "ctrl+c" => {
+                match self.update_settings(|s| s.tips = Some(!hide)) {
+                    Err(e) => self.say(format!("Could not save the setting: {e}")),
+                    Ok(()) if hide => self.say("Tips off (T shows one)".into()),
+                    Ok(()) => {}
+                }
+                Mode::Reading
+            }
+            _ => Mode::Tip { index, hide },
+        };
     }
 
     fn read(&mut self, cmd: Cmd) -> bool {
@@ -557,6 +598,12 @@ impl Reader {
             Cmd::Animate => self.toggle_animation(),
             Cmd::NoteDisplay => self.cycle_note_display(),
             Cmd::Help => self.mode = Mode::Help,
+            Cmd::Tip => {
+                let settings = marks::settings();
+                let index = settings.next_tip.unwrap_or(0) % TIPS.len();
+                let hide = self.keep_settings && settings.tips == Some(false);
+                self.mode = Mode::Tip { index, hide };
+            }
             Cmd::Color => self.recolor_mark(page),
             // Step from the rows as set, which the pane may hold shorter than the measure.
             Cmd::Wider if self.layout.width < self.measure => {
@@ -983,6 +1030,7 @@ impl Reader {
         match &self.mode {
             Mode::Reading | Mode::Select(_) => {}
             Mode::Help => draw_help(f),
+            Mode::Tip { index, hide } => draw_tip(f, *index, *hide),
             Mode::Contents(sel) => {
                 let top = self.doc.chapters.iter().map(|c| c.level).min().unwrap_or(1);
                 let entries: Vec<(String, Pos, Option<Ribbon>)> = self
@@ -1129,6 +1177,7 @@ const KEYS: &[(&str, &str)] = &[
     ("<  >", "shorter / longer rows"),
     ("a", "page-turn animation on / off"),
     ("h", "these keys"),
+    ("T", "a tip"),
     ("q  Esc", "close the book"),
 ];
 
@@ -1155,6 +1204,57 @@ fn draw_help(f: &mut Frame) {
     let block = Block::bordered()
         .title(" Keys ")
         .title_bottom(" any key to close ");
+    f.render_widget(Clear, popup);
+    f.render_widget(Paragraph::new(lines).block(block), popup);
+}
+
+/// Tips, one shown each time a book opens.
+const TIPS: &[&str] = &[
+    "h lists every key, any time.",
+    "m hangs a ribbon on the page as a bookmark; c changes its colour.",
+    "n writes a note on the page. v picks a row, and Enter writes a note on that row.",
+    "? asks the agent beside the book about the pages in front of you. Its answer comes back as a note.",
+    "N shows notes as footnotes, in the margin, or as marks only.",
+    "< and > shorten and lengthen the rows. Each book remembers its own.",
+    "l lists the bookmarks and notes: Enter goes there, d removes one.",
+    "g opens the contents, when the book has chapters.",
+    "a turns the page-turn animation off, or on again.",
+];
+
+fn draw_tip(f: &mut Frame, index: usize, hide: bool) {
+    let area = f.area();
+    let width = area.width.saturating_sub(4).min(56);
+    let inner = width.saturating_sub(4) as usize;
+    let mut tip = DocLine::new(TIPS[index], Kind::Body);
+    tip.hang = Some(0);
+    let rows: Vec<String> = crate::layout::set(0, &tip, inner)
+        .into_iter()
+        .map(|r| r.text)
+        .collect();
+    // A blank row, the tip, a blank row, the tick box, and the frame.
+    let height = (rows.len() as u16 + 5).min(area.height);
+    let [row] = Split::vertical([Constraint::Length(height)])
+        .flex(Flex::Center)
+        .areas(area);
+    let [popup] = Split::horizontal([Constraint::Length(width)])
+        .flex(Flex::Center)
+        .areas(row);
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let mut lines: Vec<Line> = vec![Line::raw("")];
+    lines.extend(rows.into_iter().map(|r| Line::raw(format!(" {r}"))));
+    lines.push(Line::raw(""));
+    let tick = if hide { "[x]" } else { "[ ]" };
+    let count = format!("{}/{} ", index + 1, TIPS.len());
+    let label = format!(" {tick} Don't show tips again");
+    let gap = (width as usize).saturating_sub(2 + label.width() + count.width());
+    lines.push(Line::from(vec![
+        Span::raw(label),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(count, dim),
+    ]));
+    let block = Block::bordered()
+        .title(" Tip ")
+        .title_bottom(" Enter close · ← → more · Space don't show again ");
     f.render_widget(Clear, popup);
     f.render_widget(Paragraph::new(lines).block(block), popup);
 }
@@ -1349,6 +1449,32 @@ mod tests {
         assert_eq!(r.mode, Mode::Help);
         assert!(!r.handle("q"));
         assert_eq!(r.mode, Mode::Reading);
+    }
+
+    #[test]
+    fn a_tip_can_be_turned_away_for_good() {
+        let mut r = reader(&["one", "two"], 1);
+        r.mode = Mode::Tip {
+            index: 0,
+            hide: false,
+        };
+        // Space ticks the box; the arrows go round the tips.
+        keys(&mut r, &["space", "right", "right", "left"]);
+        assert_eq!(
+            r.mode,
+            Mode::Tip {
+                index: 1,
+                hide: true
+            }
+        );
+        assert!(!r.handle("enter"));
+        assert_eq!(r.mode, Mode::Reading);
+        assert_eq!(
+            r.views().0.status.as_deref(),
+            Some("Tips off (T shows one)")
+        );
+        // Keys on the tip did not reach the book: still on the first page.
+        assert_eq!(r.page(), 0);
     }
 
     #[test]

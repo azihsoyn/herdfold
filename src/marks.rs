@@ -163,6 +163,12 @@ pub struct Settings {
     /// Colour for new bookmarks: the one last chosen with `c`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ribbon: Option<Ribbon>,
+    /// Whether a tip greets each book; off once "don't show again" is ticked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tips: Option<bool>,
+    /// The tip to show next, so each opening shows a different one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_tip: Option<usize>,
 }
 
 /// Where a note's text is shown on its page.

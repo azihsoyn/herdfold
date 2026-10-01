@@ -32,6 +32,7 @@ on from left to right. Elsewhere it shows one page at a time.
 | `<` / `>` | shorter / longer rows (narrower / wider margins) |
 | `a` | page-turn animation on / off (remembered) |
 | `h` | list the keys |
+| `T` | a tip (one greets each book until you tick "don't show again") |
 | `q` / `Esc` | close the book (`Esc` closes the contents first, if open) |
 
 ## What it does, and what it doesn't
