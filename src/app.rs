@@ -42,13 +42,11 @@ struct Reader {
 
 /// Opens the book. With `spread`, and inside herdr, the right-hand page goes
 /// to a pane split off for it.
-/// `measure` (longest row) defaults to the one last set, else 72.
+/// `measure` (longest row) defaults to the one last set for this book, then
+/// to the one last set for any book, then to 72.
 pub fn run(doc: Document, book: Option<String>, spread: bool, measure: Option<usize>) -> Result<()> {
     let entry = book.as_deref().and_then(marks::load).unwrap_or_default();
-    let measure = measure
-        .or(marks::settings().measure)
-        .unwrap_or(view::MEASURE)
-        .clamp(view::MEASURE_MIN, view::MEASURE_MAX);
+    let measure = starting_measure(measure, entry.measure, marks::settings().measure);
     let mut reader = Reader {
         layout: Layout::new(&doc, 1, 1),
         doc,
@@ -67,6 +65,16 @@ pub fn run(doc: Document, book: Option<String>, spread: bool, measure: Option<us
     let result = reader.run(&mut terminal, server.as_ref());
     ratatui::restore();
     result
+}
+
+/// The first of: asked for on the command line, last set for this book,
+/// last set for any book; else the default.
+fn starting_measure(asked: Option<usize>, book: Option<usize>, last: Option<usize>) -> usize {
+    asked
+        .or(book)
+        .or(last)
+        .unwrap_or(view::MEASURE)
+        .clamp(view::MEASURE_MIN, view::MEASURE_MAX)
 }
 
 impl Reader {
@@ -294,10 +302,12 @@ impl Reader {
         self.save();
     }
 
-    /// Changes the longest row and remembers it for the next book. The page
-    /// is set again around the place being read.
+    /// Changes the longest row and remembers it for this book, and as the
+    /// start for books not yet opened. The page is set again around the
+    /// place being read.
     fn set_measure(&mut self, measure: usize) {
         self.measure = measure.clamp(view::MEASURE_MIN, view::MEASURE_MAX);
+        self.entry.measure = Some(self.measure);
         let settings = marks::Settings {
             measure: Some(self.measure),
         };
@@ -305,6 +315,8 @@ impl Reader {
             Ok(()) => format!("Rows up to {} columns", self.measure),
             Err(e) => format!("Could not save the setting: {e}"),
         });
+        // Last, so a failure to keep the place shows over the note above.
+        self.save();
     }
 
     /// A bookmark covers what is open: one page, or both pages of a spread.
@@ -374,5 +386,19 @@ impl Reader {
         let mut state = ListState::default().with_selected(Some(sel));
         f.render_widget(Clear, popup);
         f.render_stateful_widget(list, popup, &mut state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_book_keeps_its_own_measure() {
+        assert_eq!(starting_measure(None, Some(84), Some(100)), 84);
+        assert_eq!(starting_measure(None, None, Some(100)), 100);
+        assert_eq!(starting_measure(Some(60), Some(84), Some(100)), 60);
+        assert_eq!(starting_measure(None, None, None), view::MEASURE);
+        assert_eq!(starting_measure(None, Some(9999), None), view::MEASURE_MAX);
     }
 }

@@ -36,8 +36,9 @@ on from left to right. Elsewhere it shows one page at a time.
   and a heading is never left alone at the foot of a page.
 - **Rows are at most 72 columns**, with margins around them, however wide the
   pane. Typesetting has long held 60–80 characters to be readable. `<` and
-  `>` change that by 4 columns at a time, and the length you settle on is
-  kept for the next book; `--measure COLS` sets it for one run.
+  `>` change that by 4 columns at a time. The length is kept per book, and
+  a book opened for the first time starts at the length last set in any
+  book; `--measure COLS` sets it for one run.
 - **Markdown is rendered**: headings drop their `#` and gain a rule, emphasis,
   code and links are styled, lists, quotes, code blocks and tables are set
   as such. Other formats are shown as they are.

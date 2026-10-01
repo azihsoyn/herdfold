@@ -42,7 +42,7 @@ struct Cli {
     #[arg(long)]
     no_spread: bool,
 
-    /// Longest row, in columns [default: the one last set with < / >, else 72].
+    /// Longest row, in columns, for this run [default: as last set for this book with < / >, else as last set for any book, else 72].
     #[arg(long, value_name = "COLS", value_parser = clap::value_parser!(u16).range(24..=240))]
     measure: Option<u16>,
 

@@ -19,6 +19,9 @@ pub struct Entry {
     /// Bookmarks, in reading order.
     #[serde(default)]
     pub marks: Vec<Pos>,
+    /// Longest row, in columns, as last set for this book.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measure: Option<usize>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -29,7 +32,8 @@ struct Store {
 /// Settings that carry over from one book to the next.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
-    /// Longest row, in columns, as last set with `<` / `>`.
+    /// Longest row, in columns, as last set with `<` / `>` in any book: the
+    /// starting length for a book that has none of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measure: Option<usize>,
 }
