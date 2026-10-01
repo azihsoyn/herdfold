@@ -17,7 +17,7 @@ use crate::doc::{Style as TextStyle, Styled};
 use crate::marks::Ribbon;
 
 /// Rows above the text: margin, running head, gap.
-const TOP: u16 = 3;
+pub const TOP: u16 = 3;
 /// Rows below the text: gap, footer, margin.
 const BOTTOM: u16 = 3;
 /// Minimum blank columns on each side of the text.
@@ -451,6 +451,12 @@ pub fn style_of(t: TextStyle) -> Style {
     }
     if t.code {
         s = s.fg(Color::Yellow);
+    }
+    if t.marker {
+        s = s.bg(Color::Yellow).fg(Color::Black);
+    }
+    if t.selected {
+        s = s.add_modifier(Modifier::REVERSED);
     }
     s
 }

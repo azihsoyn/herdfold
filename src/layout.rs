@@ -29,6 +29,12 @@ pub struct Row {
     /// The row as drawn.
     pub spans: Vec<Styled>,
     pub kind: Kind,
+    /// What precedes the line's own text on this row (gutter, continuation
+    /// mark, indent): in characters, and in columns.
+    pub lead: usize,
+    pub lead_width: usize,
+    /// How many of the line's characters, from `pos.offset`, this row holds.
+    pub len: usize,
 }
 
 pub struct Layout {
@@ -73,6 +79,9 @@ impl Layout {
                 text: String::new(),
                 spans: Vec::new(),
                 kind: Kind::Body,
+                lead: 0,
+                lead_width: 0,
+                len: 0,
             });
         }
         // Rows of footnote each row carries: the notes on it.
@@ -242,11 +251,14 @@ pub fn set(i: usize, line: &Line, width: usize) -> Vec<Row> {
             ..Style::default()
         },
     });
-    let row = |offset: usize, spans: Vec<Styled>| Row {
+    let row = |offset: usize, spans: Vec<Styled>, lead: &str, len: usize| Row {
         pos: Pos { line: i, offset },
         text: spans.iter().map(|s| s.text.as_str()).collect(),
         spans,
         kind: line.kind,
+        lead: lead.chars().count(),
+        lead_width: lead.width(),
+        len,
     };
     if line.kind == Kind::Rule {
         let c = line.text.chars().next().unwrap_or('─');
@@ -254,7 +266,12 @@ pub fn set(i: usize, line: &Line, width: usize) -> Vec<Row> {
             text: std::iter::repeat_n(c, w / width_of(c).max(1)).collect(),
             style: line.style,
         };
-        return vec![row(0, gutter.into_iter().chain([rule]).collect())];
+        return vec![row(
+            0,
+            gutter.into_iter().chain([rule]).collect(),
+            &line.gutter,
+            0,
+        )];
     }
     let chars: Vec<char> = line.text.chars().collect();
     pieces(&chars, w, line.kind, line.hang)
@@ -286,7 +303,13 @@ pub fn set(i: usize, line: &Line, width: usize) -> Vec<Row> {
                     }),
                 }
             }
-            row(p.start, spans)
+            let lead = format!(
+                "{}{}{}",
+                line.gutter,
+                if p.carried { CARRY } else { "" },
+                " ".repeat(p.prefix)
+            );
+            row(p.start, spans, &lead, p.end - p.start)
         })
         .collect()
 }

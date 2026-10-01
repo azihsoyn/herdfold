@@ -24,6 +24,7 @@ on from left to right. Elsewhere it shows one page at a time.
 | `m` | bookmark what is open (again to remove) |
 | `c` | change the colour of the bookmark here |
 | `n` | write a note on the page |
+| drag | choose text with the mouse, then `m` marker · `n` note · `?` ask · `y` copy |
 | `v` | choose a row (`j` / `k`), then `Enter` to write a note on it, or `?` to ask about it |
 | `?` | ask the agent about the open pages |
 | `l` | bookmarks and notes: `Enter` to go, `d` to remove |
@@ -60,6 +61,10 @@ on from left to right. Elsewhere it shows one page at a time.
   footnotes at the foot of the page (the page then holds less, and the
   text runs on to the next), in the outer margin beside their row (when
   the margin is wide enough; `<` makes room), or not at all.
+- **Text is chosen with the mouse**, within the page (or across both pages
+  of a spread), and can be marked with a yellow highlighter, noted, asked
+  about, or copied. The book takes the mouse for this, so the terminal's
+  own selection, which in herdr would run across both panes, is not used.
 - **The agent beside the book can be asked.** `?` sends the question, the
   open pages (and the chosen row, from `v`), to a herdr agent in the same
   tab (else the same workspace, or the one named with `--agent`). It
@@ -97,6 +102,7 @@ socket, whose path it hands to the panes it opens as `HERDBOOK_SOCKET_PATH`.
 {"event":"page_shown","data":{"type":"page_shown","left":{..},"right":{..}}}
 ```
 
+The right-hand pane passes its mouse presses on with `reader.send_mouse`.
 `note.add` writes a note into the open book (`herdbook note add` is the same
 from a shell, which is how an agent answers). Failures are
 `{"id":..,"error":{"code":..,"message":..}}`. The right-hand

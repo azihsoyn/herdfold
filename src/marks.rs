@@ -109,6 +109,9 @@ pub struct Note {
     /// For an agent's answer, the question it answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
+    /// For a range, where it ends (exclusive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<Pos>,
 }
 
 /// What a note is attached to.
@@ -122,6 +125,9 @@ pub enum Anchor {
     Page,
     /// One row, like a highlighter mark with a note beside it.
     Line,
+    /// A stretch of text chosen with the mouse, from `at` to `end`: a
+    /// highlighter marker over it, with or without a note.
+    Range,
 }
 
 #[derive(

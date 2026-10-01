@@ -38,6 +38,12 @@ pub struct Style {
     /// Inline code.
     #[serde(default, skip_serializing_if = "is_false")]
     pub code: bool,
+    /// Under a highlighter marker.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub marker: bool,
+    /// In the selection being made.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub selected: bool,
 }
 
 impl Style {
@@ -51,6 +57,8 @@ impl Style {
             dim: self.dim || o.dim,
             accent: self.accent || o.accent,
             code: self.code || o.code,
+            marker: self.marker || o.marker,
+            selected: self.selected || o.selected,
         }
     }
 }

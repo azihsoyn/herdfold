@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, MouseButton, MouseEventKind};
 use ratatui::layout::{Constraint, Flex, Layout as Split, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -14,7 +14,9 @@ use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
-use crate::api::{Call, EventData, PROTOCOL, Request, ResponseResult, SOCKET_ENV};
+use crate::api::{
+    Call, EventData, MouseKind, PROTOCOL, ReaderMouseParams, Request, ResponseResult, SOCKET_ENV,
+};
 use crate::doc::Document;
 use crate::doc::{Kind, Line as DocLine, Style as TextStyle};
 use crate::herdr::{self, RightPane};
@@ -44,11 +46,19 @@ enum Mode {
     Shelf(usize),
     /// Choosing a row; the cursor is on the row that starts at this place.
     Select(Pos),
+    /// Text chosen with the mouse, `from` up to `to` (exclusive), and what
+    /// to do with it.
+    Selected {
+        from: Pos,
+        to: Pos,
+    },
     /// Writing a note on a page or a row, or (`ask`) a question about it
     /// for the agent.
     Writing {
         anchor: Anchor,
         at: Pos,
+        /// For a range, where it ends.
+        end: Option<Pos>,
         text: String,
         ask: bool,
     },
@@ -106,6 +116,8 @@ struct Reader {
     agent: Option<String>,
     /// Colour for the next bookmark.
     ribbon: Ribbon,
+    /// Where a mouse drag began, while the button is held.
+    dragging: Option<Pos>,
     /// Where this reader's socket is, for an agent to write notes back.
     socket: Option<PathBuf>,
     /// Outcomes of work done off the main loop (asking the agent).
@@ -161,6 +173,7 @@ pub fn run(
         keep_settings: true,
         agent,
         ribbon: settings.ribbon.unwrap_or_default(),
+        dragging: None,
         socket: None,
         background: mpsc::channel(),
     };
@@ -175,7 +188,11 @@ pub fn run(
         let _ = reader.update_settings(|s| s.next_tip = Some(index + 1));
     }
     let mut terminal = ratatui::init();
+    // The book takes the mouse, so text is chosen within a page rather than
+    // across both panes of a spread.
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
     let result = reader.run(&mut terminal, server.as_ref(), spread);
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -202,7 +219,7 @@ impl Reader {
             .filter(|_| spread)
             .and_then(|s| RightPane::open(width, &s.path));
         let mut keys = Vec::new();
-        let mut drawn: Option<(PageView, Mode, ratatui::layout::Size)> = None;
+        let mut drawn: Option<(PageView, Mode, Option<Pos>, ratatui::layout::Size)> = None;
         // Hold the first page until the right pane attaches, so the book
         // opens as a spread rather than flashing a single page first.
         if let (Some(s), Some(_)) = (server, &right) {
@@ -232,7 +249,7 @@ impl Reader {
             // Draw only what changed. Writing to the terminal when nothing
             // has (even an empty frame) clears a selection made with the
             // mouse, so a quiet page is left alone.
-            let frame = (left.clone(), self.mode.clone(), area);
+            let frame = (left.clone(), self.mode.clone(), self.dragging, area);
             if self.turning.is_some() || drawn.as_ref() != Some(&frame) {
                 view::draw_whole(terminal, |f| {
                     let area = f.area();
@@ -266,10 +283,28 @@ impl Reader {
 
             // Draw a turn at about 60 frames a second; otherwise wait on keys.
             let wait = if self.turning.is_some() { 16 } else { 30 };
-            if event::poll(Duration::from_millis(wait))?
-                && let Event::Key(k) = event::read()?
-            {
-                keys.extend(view::key_name(k));
+            if event::poll(Duration::from_millis(wait))? {
+                match event::read()? {
+                    Event::Key(k) => keys.extend(view::key_name(k)),
+                    Event::Mouse(m) => {
+                        let kind = match m.kind {
+                            MouseEventKind::Down(MouseButton::Left) => Some(MouseKind::Down),
+                            MouseEventKind::Drag(MouseButton::Left) => Some(MouseKind::Drag),
+                            MouseEventKind::Up(MouseButton::Left) => Some(MouseKind::Up),
+                            _ => None,
+                        };
+                        if let Some(kind) = kind {
+                            let side = if self.spread {
+                                Side::Left
+                            } else {
+                                Side::Single
+                            };
+                            let size = (area.width, area.height);
+                            self.mouse(side, size, kind, m.column, m.row);
+                        }
+                    }
+                    _ => {}
+                }
             }
             if let Some(s) = server {
                 while let Ok(msg) = s.inbound.try_recv() {
@@ -332,6 +367,15 @@ impl Reader {
                 keys.extend(p.keys);
                 ResponseResult::Ok
             }
+            Call::ReaderSendMouse(ReaderMouseParams { kind, col, row }) => match self.attached {
+                Some((c, cols, rows)) if c == conn => {
+                    self.mouse(Side::Right, (cols, rows), kind, col, row);
+                    ResponseResult::Ok
+                }
+                _ => {
+                    return hub.fail(conn, id, "not_attached", "reader.attach first");
+                }
+            },
             Call::NoteAdd(p) => {
                 if p.text.trim().is_empty() {
                     return hub.fail(conn, id, "invalid_params", "a note needs text");
@@ -344,6 +388,7 @@ impl Reader {
                     text: p.text.trim().to_string(),
                     by: p.by,
                     question: p.question,
+                    end: p.end,
                 });
                 self.notes_rev += 1;
                 self.say(match p.by {
@@ -374,6 +419,7 @@ impl Reader {
                 .entry
                 .notes
                 .iter()
+                .filter(|n| !n.text.is_empty())
                 .map(|n| (n.at, footnote_rows(n, width).len()))
                 .collect();
             Layout::with_footnotes(&self.doc, width, height, &footnotes)
@@ -402,6 +448,8 @@ impl Reader {
             .filter(|note| match note.anchor {
                 Anchor::Page => self.layout.page_of(note.at) == n,
                 Anchor::Line => self.layout.row_of(n, note.at).is_some(),
+                // A bare marker has no text to show beside the page.
+                Anchor::Range => !note.text.is_empty() && self.layout.page_of(note.at) == n,
             })
             .collect()
     }
@@ -460,6 +508,29 @@ impl Reader {
         {
             rows[pad + i].selected = true;
         }
+        // Highlighter markers, then the selection being made, over the text.
+        let marker = TextStyle {
+            marker: true,
+            ..TextStyle::default()
+        };
+        let selected = TextStyle {
+            selected: true,
+            ..TextStyle::default()
+        };
+        let mut paint: Vec<(Pos, Pos, TextStyle)> = self
+            .entry
+            .notes
+            .iter()
+            .filter_map(|note| Some((note.at, note.end?, marker)))
+            .collect();
+        if let Mode::Selected { from, to } = self.mode {
+            paint.push((from, to, selected));
+        }
+        for (i, r) in self.layout.page(n).iter().enumerate() {
+            for &(from, to, style) in &paint {
+                paint_row(&mut rows[pad + i], r, from, to, style);
+            }
+        }
         let notes = self.notes_on(n);
         let mut margin_notes = Vec::new();
         match self.note_display {
@@ -490,7 +561,9 @@ impl Reader {
                 for note in &notes {
                     let row = match note.anchor {
                         Anchor::Page => 0,
-                        Anchor::Line => pad + self.layout.row_of(n, note.at).unwrap_or(0),
+                        Anchor::Line | Anchor::Range => {
+                            pad + self.layout.row_of(n, note.at).unwrap_or(0)
+                        }
                     };
                     margin_notes.push(MarginNote {
                         row,
@@ -548,6 +621,10 @@ impl Reader {
             self.tip_key(key, index, hide);
             return false;
         }
+        if let Mode::Selected { from, to } = self.mode {
+            self.selected_key(key, from, to);
+            return false;
+        }
         let Some(cmd) = view::cmd_of(key) else {
             return false;
         };
@@ -561,7 +638,7 @@ impl Reader {
                 self.mode = Mode::Reading;
                 false
             }
-            Mode::Writing { .. } | Mode::Tip { .. } => false,
+            Mode::Writing { .. } | Mode::Tip { .. } | Mode::Selected { .. } => false,
         }
     }
 
@@ -644,6 +721,7 @@ impl Reader {
                 self.mode = Mode::Writing {
                     anchor: Anchor::Page,
                     at: self.layout.start_of(page),
+                    end: None,
                     text: String::new(),
                     ask: cmd == Cmd::Ask,
                 };
@@ -725,6 +803,7 @@ impl Reader {
                 self.mode = Mode::Writing {
                     anchor: Anchor::Line,
                     at,
+                    end: None,
                     text: String::new(),
                     ask: cmd == Cmd::Ask,
                 };
@@ -740,6 +819,7 @@ impl Reader {
         let Mode::Writing {
             anchor,
             at,
+            end,
             text,
             ask,
         } = &mut self.mode
@@ -749,15 +829,15 @@ impl Reader {
         match key {
             "enter" if *ask => {
                 let question = text.trim().to_string();
-                let (anchor, at) = (*anchor, *at);
+                let (anchor, at, end) = (*anchor, *at, *end);
                 self.mode = Mode::Reading;
                 if !question.is_empty() {
-                    self.ask(&question, anchor, at);
+                    self.ask(&question, anchor, at, end);
                 }
             }
             "enter" => {
                 let text = text.trim().to_string();
-                let (anchor, at) = (*anchor, *at);
+                let (anchor, at, end) = (*anchor, *at, *end);
                 self.mode = Mode::Reading;
                 if !text.is_empty() {
                     self.entry.add_note(Note {
@@ -766,6 +846,7 @@ impl Reader {
                         text,
                         by: Author::Reader,
                         question: None,
+                        end,
                     });
                     self.notes_rev += 1;
                     self.say("Note kept".into());
@@ -784,6 +865,154 @@ impl Reader {
             "space" => text.push(' '),
             // Other named keys (arrows, tab, ...) are not text.
             k if k.chars().count() == 1 => text.push_str(k),
+            _ => {}
+        }
+    }
+
+    /// A mouse button on a page: pressing starts choosing text, dragging
+    /// extends the choice, releasing offers what to do with it. A click
+    /// without a drag lets the choice go.
+    fn mouse(&mut self, side: Side, size: (u16, u16), kind: MouseKind, col: u16, row: u16) {
+        // Only while reading or choosing; panels in front take no mouse.
+        if !matches!(self.mode, Mode::Reading | Mode::Selected { .. }) {
+            return;
+        }
+        let page = match side {
+            Side::Right => self.page() + 1,
+            Side::Left | Side::Single => self.page(),
+        };
+        let Some(at) = self.point_at(page, size, col, row) else {
+            return;
+        };
+        match kind {
+            MouseKind::Down => {
+                self.toast = None;
+                self.dragging = Some(at);
+                self.mode = Mode::Selected {
+                    from: at,
+                    to: self.next_char(at),
+                };
+            }
+            MouseKind::Drag => {
+                if let Some(start) = self.dragging {
+                    let (from, last) = if at < start { (at, start) } else { (start, at) };
+                    self.mode = Mode::Selected {
+                        from,
+                        to: self.next_char(last),
+                    };
+                }
+            }
+            MouseKind::Up => {
+                let start = self.dragging.take();
+                if start == Some(at) {
+                    self.mode = Mode::Reading;
+                }
+            }
+        }
+    }
+
+    /// The place in the text under cell (`col`, `row`) of a pane of `size`
+    /// showing page `n`; beside or past a row's text, its nearest end.
+    fn point_at(&self, n: usize, size: (u16, u16), col: u16, row: u16) -> Option<Pos> {
+        let rows = self.layout.page(n);
+        if rows.is_empty() {
+            return None;
+        }
+        let area = Rect::new(0, 0, size.0, size.1);
+        let (x0, _) = view::column(area, self.layout.width);
+        let i = (row as usize)
+            .saturating_sub(view::TOP as usize + self.layout.pad(n))
+            .min(rows.len() - 1);
+        let r = &rows[i];
+        let line: Vec<char> = self.doc.lines[r.pos.line].text.chars().collect();
+        let mut x = (col as usize).saturating_sub(x0 as usize);
+        if x < r.lead_width {
+            return Some(r.pos);
+        }
+        x -= r.lead_width;
+        let mut used = 0;
+        for k in 0..r.len {
+            let w = line
+                .get(r.pos.offset + k)
+                .map(|c| unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0))
+                .unwrap_or(1);
+            if x < used + w {
+                return Some(Pos {
+                    line: r.pos.line,
+                    offset: r.pos.offset + k,
+                });
+            }
+            used += w;
+        }
+        // Past the end of the row's text: its last character.
+        Some(Pos {
+            line: r.pos.line,
+            offset: r.pos.offset + r.len.saturating_sub(1),
+        })
+    }
+
+    /// The place just after the character at `at`.
+    fn next_char(&self, at: Pos) -> Pos {
+        Pos {
+            line: at.line,
+            offset: at.offset + 1,
+        }
+    }
+
+    /// The text from `from` up to `to`, lines joined by newlines.
+    fn text_between(&self, from: Pos, to: Pos) -> String {
+        let mut out = String::new();
+        for line in from.line..=to.line.min(self.doc.lines.len().saturating_sub(1)) {
+            let chars: Vec<char> = self.doc.lines[line].text.chars().collect();
+            let a = if line == from.line { from.offset } else { 0 };
+            let b = if line == to.line {
+                to.offset
+            } else {
+                chars.len()
+            };
+            if line > from.line {
+                out.push('\n');
+            }
+            out.extend(chars.iter().take(b.min(chars.len())).skip(a));
+        }
+        out
+    }
+
+    /// A key while text is chosen: what to do with it.
+    fn selected_key(&mut self, key: &str, from: Pos, to: Pos) {
+        let write = |ask| Mode::Writing {
+            anchor: Anchor::Range,
+            at: from,
+            end: Some(to),
+            text: String::new(),
+            ask,
+        };
+        match key {
+            "m" => {
+                self.entry.add_note(Note {
+                    at: from,
+                    anchor: Anchor::Range,
+                    text: String::new(),
+                    by: Author::Reader,
+                    question: None,
+                    end: Some(to),
+                });
+                self.notes_rev += 1;
+                self.mode = Mode::Reading;
+                self.say("Marked".into());
+                self.save();
+            }
+            "n" => self.mode = write(false),
+            "?" => self.mode = write(true),
+            "y" => {
+                let text = self.text_between(from, to);
+                self.mode = Mode::Reading;
+                match copy(&text) {
+                    Ok(()) => self.say("Copied".into()),
+                    Err(e) => self.say(format!("Could not copy: {e}")),
+                }
+            }
+            "esc" | "q" | "ctrl+c" => self.mode = Mode::Reading,
             _ => {}
         }
     }
@@ -864,7 +1093,7 @@ impl Reader {
     /// Sends the question, with the open pages, to an agent beside the
     /// book. The agent answers in its own pane, and is asked to keep a short
     /// answer in the book as a note where the question was asked.
-    fn ask(&mut self, question: &str, anchor: Anchor, at: Pos) {
+    fn ask(&mut self, question: &str, anchor: Anchor, at: Pos, end: Option<Pos>) {
         let agent = match herdr::find_agent(self.agent.as_deref()) {
             Ok(a) => a,
             Err(e) => {
@@ -872,7 +1101,7 @@ impl Reader {
                 return;
             }
         };
-        let prompt = self.prompt(question, anchor, at);
+        let prompt = self.prompt(question, anchor, at, end);
         self.say(format!("Asking {}…", agent.label));
         let done = self.background.0.clone();
         std::thread::spawn(move || {
@@ -886,7 +1115,7 @@ impl Reader {
 
     /// The question as the agent receives it: where the reader is, what is
     /// on the open pages, and how to put the answer back in the book.
-    fn prompt(&self, question: &str, anchor: Anchor, at: Pos) -> String {
+    fn prompt(&self, question: &str, anchor: Anchor, at: Pos, end: Option<Pos>) -> String {
         let pages = self.open_pages();
         let chapter = self
             .chapter_pages
@@ -901,7 +1130,12 @@ impl Reader {
             pages.start + 1,
             self.layout.page_count(),
         );
-        if anchor == Anchor::Line {
+        if let Some(end) = end {
+            out += &format!(
+                "\nThey are asking about this passage:\n> {}\n",
+                self.text_between(at, end).replace('\n', "\n> ")
+            );
+        } else if anchor == Anchor::Line {
             out += &format!(
                 "\nThey are asking about this row:\n> {}\n",
                 self.row_text(at)
@@ -920,9 +1154,10 @@ impl Reader {
             let exe = std::env::current_exe()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "herdbook".into());
+            // A note on a passage is set beside its first row.
             let anchor = match anchor {
                 Anchor::Page => "page",
-                Anchor::Line => "line",
+                Anchor::Line | Anchor::Range => "line",
             };
             out += &format!(
                 "Then keep a short version of the answer in their book, as a note where they asked, by running:\n\n\
@@ -1020,9 +1255,17 @@ impl Reader {
         });
         let notes = self.entry.notes.iter().enumerate().map(|(i, n)| {
             let sign = sign(n);
-            let label = match n.anchor {
-                Anchor::Page => format!("{sign} {}", n.text),
-                Anchor::Line => format!("{sign} {}  — {}", n.text, self.row_text(n.at)),
+            let label = match (n.anchor, n.end) {
+                (Anchor::Range, Some(end)) => {
+                    let quote = self.text_between(n.at, end).replace('\n', " ");
+                    if n.text.is_empty() {
+                        format!("{sign} “{quote}”")
+                    } else {
+                        format!("{sign} {}  — “{quote}”", n.text)
+                    }
+                }
+                (Anchor::Page, _) => format!("{sign} {}", n.text),
+                _ => format!("{sign} {}  — {}", n.text, self.row_text(n.at)),
             };
             Shelved {
                 label,
@@ -1037,12 +1280,21 @@ impl Reader {
     }
 
     fn draw_overlay(&self, f: &mut Frame) {
-        if !matches!(self.mode, Mode::Reading | Mode::Select(_)) {
+        if !matches!(
+            self.mode,
+            Mode::Reading | Mode::Select(_) | Mode::Selected { .. }
+        ) {
             let area = f.area();
             view::backdrop(f.buffer_mut(), area);
         }
         match &self.mode {
             Mode::Reading | Mode::Select(_) => {}
+            // The page stays bright: the chosen text is what is being acted on.
+            Mode::Selected { from, to } if self.dragging.is_none() => {
+                let quote = self.text_between(*from, *to).replace('\n', " ");
+                draw_selection(f, &quote);
+            }
+            Mode::Selected { .. } => {}
             Mode::Help => draw_help(f),
             Mode::Tip { index, hide } => draw_tip(f, *index, *hide),
             Mode::Contents(sel) => {
@@ -1081,13 +1333,16 @@ impl Reader {
                 at,
                 text,
                 ask,
+                ..
             } => {
                 let page = self.layout.page_of(*at) + 1;
                 let title = match (anchor, ask) {
                     (Anchor::Page, false) => format!("Note on p.{page}"),
                     (Anchor::Line, false) => "Note on this row".to_string(),
+                    (Anchor::Range, false) => "Note on the chosen text".to_string(),
                     (Anchor::Page, true) => format!("Ask the agent about p.{page}"),
                     (Anchor::Line, true) => "Ask the agent about this row".to_string(),
+                    (Anchor::Range, true) => "Ask the agent about the chosen text".to_string(),
                 };
                 draw_input(f, &title, text);
             }
@@ -1147,6 +1402,101 @@ impl Reader {
     }
 }
 
+/// Adds `style` to the characters of page row `row` (set from layout row
+/// `r`) that lie from `from` up to `to`.
+fn paint_row(row: &mut PageRow, r: &crate::layout::Row, from: Pos, to: Pos, style: TextStyle) {
+    let starts = r.pos;
+    let ends = Pos {
+        line: r.pos.line,
+        offset: r.pos.offset + r.len,
+    };
+    if r.len == 0 || to <= starts || from >= ends {
+        return;
+    }
+    let mut cells: Vec<(char, TextStyle)> = row
+        .spans
+        .iter()
+        .flat_map(|s| s.text.chars().map(move |c| (c, s.style)))
+        .collect();
+    for (k, cell) in cells.iter_mut().enumerate().skip(r.lead).take(r.len) {
+        let at = Pos {
+            line: r.pos.line,
+            offset: r.pos.offset + k - r.lead,
+        };
+        if from <= at && at < to {
+            cell.1 = cell.1.with(style);
+        }
+    }
+    let mut spans: Vec<crate::doc::Styled> = Vec::new();
+    for (c, st) in cells {
+        match spans.last_mut() {
+            Some(last) if last.style == st => last.text.push(c),
+            _ => spans.push(crate::doc::Styled {
+                text: c.to_string(),
+                style: st,
+            }),
+        }
+    }
+    row.spans = spans;
+}
+
+/// Puts `text` on the clipboard: through `pbcopy` where there is one, else
+/// by asking the terminal (OSC 52), which herdr may or may not pass on.
+fn copy(text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Ok(mut child) = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(text.as_bytes())?;
+        }
+        child.wait()?;
+        return Ok(());
+    }
+    let mut out = std::io::stdout();
+    write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()))?;
+    out.flush()
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ABC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ABC[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// What can be done with text chosen with the mouse, in a panel at the foot.
+fn draw_selection(f: &mut Frame, quote: &str) {
+    let area = f.area();
+    let width = area.width.saturating_sub(4).min(80);
+    let height = view::panel_height(1, 0);
+    let x = area.x + (area.width - width) / 2;
+    let y = area.bottom().saturating_sub(height + 3);
+    let panel = Rect::new(x, y, width, height).intersection(area);
+    let hint = "m marker · n note · ? ask · y copy · Esc let go";
+    let room = view::draw_panel(f.buffer_mut(), panel, "Chosen", hint, 0);
+    let quote = view::fit(&format!("“{quote}”"), room.width as usize);
+    f.render_widget(
+        Paragraph::new(Line::raw(quote)).style(view::panel_style()),
+        room,
+    );
+}
+
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
@@ -1157,6 +1507,7 @@ fn sign(note: &Note) -> &'static str {
         (Author::Agent, _) => "✦",
         (Author::Reader, Anchor::Page) => "✎",
         (Author::Reader, Anchor::Line) => "▎",
+        (Author::Reader, Anchor::Range) => "▌",
     }
 }
 
@@ -1356,6 +1707,7 @@ mod tests {
             keep_settings: false,
             agent: None,
             ribbon: Ribbon::default(),
+            dragging: None,
             socket: None,
             background: mpsc::channel(),
         };
@@ -1454,7 +1806,7 @@ mod tests {
         let mut r = reader(&["one", "two's", "three"], 3);
         r.socket = Some(PathBuf::from("/tmp/hb.sock"));
         let at = r.open_rows()[1];
-        let p = r.prompt("why?", Anchor::Line, at);
+        let p = r.prompt("why?", Anchor::Line, at, None);
         assert!(p.contains("at p.1 of 1:\n\nwhy?\n"));
         assert!(p.contains("this row:\n> two's\n"));
         assert!(p.contains("--- p.1 ---\none\ntwo's\nthree\n"));
@@ -1517,6 +1869,87 @@ mod tests {
         );
         // Keys on the tip did not reach the book: still on the first page.
         assert_eq!(r.page(), 0);
+    }
+
+    fn drag(r: &mut Reader, from: (u16, u16), to: (u16, u16)) {
+        // The text column fills a 20-column pane; rows start below the head.
+        let size = (20, 40);
+        r.mouse(
+            Side::Single,
+            size,
+            MouseKind::Down,
+            from.0,
+            from.1 + view::TOP,
+        );
+        r.mouse(Side::Single, size, MouseKind::Drag, to.0, to.1 + view::TOP);
+        r.mouse(Side::Single, size, MouseKind::Up, to.0, to.1 + view::TOP);
+    }
+
+    #[test]
+    fn a_drag_chooses_text_by_character() {
+        let mut r = reader(&["hello world", "second line"], 5);
+        drag(&mut r, (6, 0), (2, 1));
+        let Mode::Selected { from, to } = r.mode else {
+            panic!("not chosen: {:?}", r.mode);
+        };
+        assert_eq!(r.text_between(from, to), "world\nsec");
+        // Backwards drags choose the same text.
+        drag(&mut r, (2, 1), (6, 0));
+        assert_eq!(r.mode, Mode::Selected { from, to });
+    }
+
+    #[test]
+    fn a_click_lets_a_choice_go() {
+        let mut r = reader(&["hello"], 3);
+        drag(&mut r, (1, 0), (3, 0));
+        drag(&mut r, (1, 0), (1, 0));
+        assert_eq!(r.mode, Mode::Reading);
+    }
+
+    #[test]
+    fn chosen_text_is_marked_and_painted() {
+        let mut r = reader(&["hello world"], 3);
+        drag(&mut r, (0, 0), (4, 0));
+        keys(&mut r, &["m"]);
+        let note = &r.entry.notes[0];
+        assert_eq!((note.anchor, note.end.unwrap().offset), (Anchor::Range, 5));
+        let spans = &r.views().0.rows[0].spans;
+        let marked: Vec<_> = spans
+            .iter()
+            .map(|s| (s.text.as_str(), s.style.marker))
+            .collect();
+        assert_eq!(marked, [("hello", true), (" world", false)]);
+        let labels: Vec<_> = r.shelf().into_iter().map(|s| s.label).collect();
+        assert_eq!(labels, ["▌ “hello”"]);
+    }
+
+    #[test]
+    fn chosen_text_takes_a_note_or_a_question() {
+        let mut r = reader(&["hello world"], 3);
+        drag(&mut r, (6, 0), (10, 0));
+        keys(&mut r, &["n", "x", "enter"]);
+        let note = &r.entry.notes[0];
+        assert_eq!(
+            (note.text.as_str(), note.at.offset, note.end.unwrap().offset),
+            ("x", 6, 11)
+        );
+        drag(&mut r, (6, 0), (10, 0));
+        keys(&mut r, &["?"]);
+        assert!(matches!(
+            r.mode,
+            Mode::Writing {
+                ask: true,
+                end: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn base64_pads() {
+        assert_eq!(base64(b"hi"), "aGk=");
+        assert_eq!(base64(b"hello"), "aGVsbG8=");
+        assert_eq!(base64("あ".as_bytes()), "44GC");
     }
 
     #[test]

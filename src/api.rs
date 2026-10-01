@@ -42,6 +42,10 @@ pub enum Call {
     /// Keys pressed elsewhere, by herdr's key names (`space`, `esc`, `ctrl+c`, `b`, ...).
     #[serde(rename = "reader.send_keys")]
     ReaderSendKeys(ReaderSendKeysParams),
+    /// A mouse button pressed, dragged or released in the attached pane,
+    /// at a cell of that pane.
+    #[serde(rename = "reader.send_mouse")]
+    ReaderSendMouse(ReaderMouseParams),
     /// Write a note in the book, as an agent answering a question does.
     #[serde(rename = "note.add")]
     NoteAdd(NoteAddParams),
@@ -70,12 +74,30 @@ pub struct ReaderSizeParams {
     pub rows: u16,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ReaderMouseParams {
+    pub kind: MouseKind,
+    pub col: u16,
+    pub row: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseKind {
+    Down,
+    Drag,
+    Up,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NoteAddParams {
     pub text: String,
     /// Where the note goes; the page open now when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Pos>,
+    /// For a range, where it ends (exclusive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<Pos>,
     #[serde(default)]
     pub anchor: Anchor,
     /// Who wrote it; an agent when absent.

@@ -6,11 +6,11 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, MouseButton, MouseEventKind};
 
 use crate::api::{
-    Call, EventData, EventsSubscribeParams, Incoming, ReaderSendKeysParams, ReaderSizeParams,
-    Subscription,
+    Call, EventData, EventsSubscribeParams, Incoming, MouseKind, ReaderMouseParams,
+    ReaderSendKeysParams, ReaderSizeParams, Subscription,
 };
 use crate::cli::CliError;
 use crate::client::Client;
@@ -26,7 +26,10 @@ pub fn run() -> Result<(), CliError> {
     }))?;
 
     let mut terminal = ratatui::init();
+    // Mouse presses go to the reader, which chooses text on this page.
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
     let result = draw(&mut terminal, &mut client);
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -64,6 +67,21 @@ fn draw(terminal: &mut ratatui::DefaultTerminal, client: &mut Client) -> Result<
                     if let Some(key) = view::key_name(k) {
                         client.send(Call::ReaderSendKeys(ReaderSendKeysParams {
                             keys: vec![key],
+                        }))?;
+                    }
+                }
+                Event::Mouse(m) => {
+                    let kind = match m.kind {
+                        MouseEventKind::Down(MouseButton::Left) => Some(MouseKind::Down),
+                        MouseEventKind::Drag(MouseButton::Left) => Some(MouseKind::Drag),
+                        MouseEventKind::Up(MouseButton::Left) => Some(MouseKind::Up),
+                        _ => None,
+                    };
+                    if let Some(kind) = kind {
+                        client.send(Call::ReaderSendMouse(ReaderMouseParams {
+                            kind,
+                            col: m.column,
+                            row: m.row,
                         }))?;
                     }
                 }

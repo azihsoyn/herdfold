@@ -34,6 +34,7 @@ pub fn params(
     NoteAddParams {
         text,
         at,
+        end: None,
         anchor,
         by,
         question,
