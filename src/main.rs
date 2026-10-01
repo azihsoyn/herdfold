@@ -25,9 +25,10 @@ pub const NAME: &str = env!("CARGO_PKG_NAME");
 /// Long text, laid out as facing pages you turn.
 ///
 /// Space turns the page, b turns back, m bookmarks, g opens the contents,
-/// < and > shorten and lengthen the rows, q or Esc closes the book. Inside
-/// herdr the pane is split and the book opens as a spread across two panes;
-/// elsewhere it shows one page at a time.
+/// < and > shorten and lengthen the rows, a turns the page-turn animation
+/// on or off, q or Esc closes the book. Inside herdr the pane is split and
+/// the book opens as a spread across two panes; elsewhere it shows one page
+/// at a time.
 #[derive(Parser)]
 #[command(name = NAME, version, subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
 struct Cli {
@@ -47,8 +48,12 @@ struct Cli {
     #[arg(long, value_name = "COLS", value_parser = clap::value_parser!(u16).range(24..=240))]
     measure: Option<u16>,
 
-    /// Turn pages at once, without drawing the turn.
-    #[arg(long)]
+    /// Draw page turns this run [default: as last toggled with `a`, else drawn].
+    #[arg(long, overrides_with = "no_animation")]
+    animation: bool,
+
+    /// Turn pages at once this run, without drawing the turn.
+    #[arg(long, overrides_with = "animation")]
     no_animation: bool,
 
     #[command(subcommand)]
@@ -100,7 +105,11 @@ fn main() -> Result<ExitCode> {
                 file,
                 cli.no_spread,
                 cli.measure.map(usize::from),
-                !cli.no_animation,
+                match (cli.animation, cli.no_animation) {
+                    (true, _) => Some(true),
+                    (_, true) => Some(false),
+                    _ => None,
+                },
             )?;
             Ok(ExitCode::SUCCESS)
         }
@@ -112,7 +121,7 @@ fn open(
     file: PathBuf,
     no_spread: bool,
     measure: Option<usize>,
-    animate: bool,
+    animate: Option<bool>,
 ) -> Result<()> {
     let (bytes, name, book) = if file.as_os_str() == "-" {
         let mut buf = Vec::new();

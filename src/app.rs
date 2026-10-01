@@ -56,10 +56,12 @@ pub fn run(
     book: Option<String>,
     spread: bool,
     measure: Option<usize>,
-    animate: bool,
+    animate: Option<bool>,
 ) -> Result<()> {
     let entry = book.as_deref().and_then(marks::load).unwrap_or_default();
-    let measure = starting_measure(measure, entry.measure, marks::settings().measure);
+    let settings = marks::settings();
+    let measure = starting_measure(measure, entry.measure, settings.measure);
+    let animate = animate.or(settings.animate).unwrap_or(true);
     let mut reader = Reader {
         layout: Layout::new(&doc, 1, 1),
         doc,
@@ -323,6 +325,7 @@ impl Reader {
                 }
             }
             Cmd::Mark => self.toggle_mark(page),
+            Cmd::Animate => self.toggle_animation(),
             // Step from the rows as set, which the pane may hold shorter than the measure.
             Cmd::Wider if self.layout.width < self.measure => {
                 self.note = Some("Rows are already as long as the pane allows".into());
@@ -372,15 +375,29 @@ impl Reader {
     fn set_measure(&mut self, measure: usize) {
         self.measure = measure.clamp(view::MEASURE_MIN, view::MEASURE_MAX);
         self.entry.measure = Some(self.measure);
-        let settings = marks::Settings {
-            measure: Some(self.measure),
-        };
-        self.note = Some(match marks::save_settings(&settings) {
-            Ok(()) => format!("Rows up to {} columns", self.measure),
-            Err(e) => format!("Could not save the setting: {e}"),
-        });
+        let measure = self.measure;
+        self.note = Some(
+            match marks::update_settings(|s| s.measure = Some(measure)) {
+                Ok(()) => format!("Rows up to {} columns", self.measure),
+                Err(e) => format!("Could not save the setting: {e}"),
+            },
+        );
         // Last, so a failure to keep the place shows over the note above.
         self.save();
+    }
+
+    /// Turns the drawing of page turns on or off, for every book from now on.
+    fn toggle_animation(&mut self) {
+        self.animate = !self.animate;
+        self.turning = None;
+        let animate = self.animate;
+        self.note = Some(
+            match marks::update_settings(|s| s.animate = Some(animate)) {
+                Ok(()) if animate => "Page turns drawn".into(),
+                Ok(()) => "Page turns instant".into(),
+                Err(e) => format!("Could not save the setting: {e}"),
+            },
+        );
     }
 
     /// A bookmark covers what is open: one page, or both pages of a spread.

@@ -81,6 +81,8 @@ pub enum Cmd {
     Wider,
     /// Shorter rows (wider margins).
     Narrower,
+    /// Draw page turns, or stop drawing them.
+    Animate,
 }
 
 /// A key press under herdr's key names (`space`, `esc`, `ctrl+c`, `b`, ...),
@@ -122,6 +124,7 @@ pub fn cmd_of(key: &str) -> Option<Cmd> {
         "esc" => Cmd::Back,
         ">" => Cmd::Wider,
         "<" => Cmd::Narrower,
+        "a" => Cmd::Animate,
         _ => return None,
     })
 }

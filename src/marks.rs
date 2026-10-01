@@ -36,6 +36,9 @@ pub struct Settings {
     /// starting length for a book that has none of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measure: Option<usize>,
+    /// Whether page turns are drawn, as last toggled with `a`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animate: Option<bool>,
 }
 
 fn data_file(name: &str) -> Option<PathBuf> {
@@ -65,10 +68,13 @@ pub fn settings() -> Settings {
         .unwrap_or_default()
 }
 
-pub fn save_settings(settings: &Settings) -> Result<()> {
+/// Changes some settings, keeping the rest as they are on disk.
+pub fn update_settings(change: impl FnOnce(&mut Settings)) -> Result<()> {
     let path =
         data_file("settings.json").context("no HOME or XDG_DATA_HOME to keep settings in")?;
-    write_json(&path, settings)
+    let mut settings = settings();
+    change(&mut settings);
+    write_json(&path, &settings)
 }
 
 fn read_store() -> Store {

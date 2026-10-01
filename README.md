@@ -24,6 +24,7 @@ on from left to right. Elsewhere it shows one page at a time.
 | `m` | bookmark what is open (again to remove) |
 | `g` | contents: chapters, then bookmarks |
 | `<` / `>` | shorter / longer rows (narrower / wider margins) |
+| `a` | page-turn animation on / off (remembered) |
 | `q` / `Esc` | close the book (`Esc` closes the contents first, if open) |
 
 ## What it does, and what it doesn't
@@ -50,8 +51,10 @@ on from left to right. Elsewhere it shows one page at a time.
   number, so it survives a change of pane size.
 - **There is no scrolling.** Only turning. A turn is drawn: the free edge of
   the sheet (`┃`) crosses the right page and then the left, the next pages
-  appearing behind it, in about a third of a second (`--no-animation` turns
-  at once). Jumps from the contents are not animated.
+  appearing behind it, in about a third of a second. `a` switches this off
+  (or back on) for every book from then on; `--no-animation` /
+  `--animation` decide it for one run. Jumps from the contents are not
+  animated.
 
 `--no-spread` keeps one page at a time even inside herdr.
 
