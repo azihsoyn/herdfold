@@ -208,6 +208,15 @@ fn set(i: usize, line: &Line, width: usize) -> Vec<Row> {
         .into_iter()
         .map(|p| {
             let mut spans: Vec<Styled> = gutter.iter().cloned().collect();
+            if p.carried {
+                spans.push(Styled {
+                    text: CARRY.to_string(),
+                    style: Style {
+                        dim: true,
+                        ..Style::default()
+                    },
+                });
+            }
             if p.prefix > 0 {
                 spans.push(Styled {
                     text: " ".repeat(p.prefix),
@@ -230,13 +239,18 @@ fn set(i: usize, line: &Line, width: usize) -> Vec<Row> {
 }
 
 /// One row of a line: characters `start..end` (trailing spaces dropped),
-/// after `prefix` columns of indent.
+/// after `prefix` columns of indent, or after the continuation mark when
+/// `carried` (a preformatted line broken at the edge).
 #[derive(Debug, PartialEq)]
 struct Piece {
     start: usize,
     end: usize,
     prefix: usize,
+    carried: bool,
 }
+
+/// Opens a preformatted row carried over from the row above.
+const CARRY: &str = "↪ ";
 
 /// Breaks one line into rows no wider than `width`. Wrapped rows are
 /// indented by `hang`, or by the line's own leading spaces when `None`.
@@ -246,6 +260,7 @@ fn pieces(chars: &[char], width: usize, kind: Kind, hang: Option<usize>) -> Vec<
             start: 0,
             end: 0,
             prefix: 0,
+            carried: false,
         }];
     }
     if kind == Kind::Pre {
@@ -296,23 +311,30 @@ fn pieces(chars: &[char], width: usize, kind: Kind, hang: Option<usize>) -> Vec<
             start: i,
             end: trimmed,
             prefix,
+            carried: false,
         });
         i = end;
     }
     out
 }
 
+/// Breaks a preformatted line hard at the edge. Rows after the first open
+/// with the continuation mark, so they are not read as lines of their own.
 fn pieces_hard(chars: &[char], width: usize) -> Vec<Piece> {
+    // Too narrow to spare room for the mark: break without it.
+    let mark = if width > 2 * CARRY.width() { CARRY.width() } else { 0 };
     let mut out = Vec::new();
     let mut start = 0;
     let mut used = 0;
     for (i, &c) in chars.iter().enumerate() {
+        let room = if out.is_empty() { width } else { width - mark };
         let w = width_of(c);
-        if used + w > width && i > start {
+        if used + w > room && i > start {
             out.push(Piece {
                 start,
                 end: i,
                 prefix: 0,
+                carried: !out.is_empty() && mark > 0,
             });
             start = i;
             used = 0;
@@ -323,6 +345,7 @@ fn pieces_hard(chars: &[char], width: usize) -> Vec<Piece> {
         start,
         end: chars.len(),
         prefix: 0,
+        carried: !out.is_empty() && mark > 0,
     });
     out
 }
@@ -415,10 +438,10 @@ mod tests {
     }
 
     #[test]
-    fn preformatted_keeps_spaces() {
+    fn preformatted_keeps_spaces_and_marks_carried_rows() {
         assert_eq!(
-            wrap("    x  y", 5, Kind::Pre),
-            [(0, "    x".into()), (5, "  y".into())]
+            wrap("    x  yz", 5, Kind::Pre),
+            [(0, "    x".into()), (5, "↪   y".into()), (8, "↪ z".into())]
         );
     }
 
