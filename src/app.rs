@@ -36,12 +36,19 @@ struct Reader {
     attached: Option<(ConnId, u16, u16)>,
     /// The last `page_shown` sent, so unchanged pages are not resent.
     shown: Option<EventData>,
+    /// Longest row, in columns.
+    measure: usize,
 }
 
 /// Opens the book. With `spread`, and inside herdr, the right-hand page goes
 /// to a pane split off for it.
-pub fn run(doc: Document, book: Option<String>, spread: bool) -> Result<()> {
+/// `measure` (longest row) defaults to the one last set, else 72.
+pub fn run(doc: Document, book: Option<String>, spread: bool, measure: Option<usize>) -> Result<()> {
     let entry = book.as_deref().and_then(marks::load).unwrap_or_default();
+    let measure = measure
+        .or(marks::settings().measure)
+        .unwrap_or(view::MEASURE)
+        .clamp(view::MEASURE_MIN, view::MEASURE_MAX);
     let mut reader = Reader {
         layout: Layout::new(&doc, 1, 1),
         doc,
@@ -53,6 +60,7 @@ pub fn run(doc: Document, book: Option<String>, spread: bool) -> Result<()> {
         note: None,
         attached: None,
         shown: None,
+        measure,
     };
     let server = if spread { Server::listen().ok() } else { None };
     let mut terminal = ratatui::init();
@@ -83,7 +91,7 @@ impl Reader {
                 // Both pages are set to the smaller pane so they match.
                 size = (size.0.min(w), size.1.min(h));
             }
-            self.fit(view::text_size(size.0, size.1), self.attached.is_some());
+            self.fit(view::text_size(size.0, size.1, self.measure), self.attached.is_some());
 
             let (left, right) = self.views();
             terminal.draw(|f| {
@@ -257,6 +265,12 @@ impl Reader {
             }
             Cmd::Prev => self.go(page.saturating_sub(self.step())),
             Cmd::Mark => self.toggle_mark(page),
+            // Step from the rows as set, which the pane may hold shorter than the measure.
+            Cmd::Wider if self.layout.width < self.measure => {
+                self.note = Some("Rows are already as long as the pane allows".into());
+            }
+            Cmd::Wider => self.set_measure(self.layout.width + view::MEASURE_STEP),
+            Cmd::Narrower => self.set_measure(self.layout.width.saturating_sub(view::MEASURE_STEP)),
             Cmd::Contents => {
                 let entries = self.contents();
                 if entries.is_empty() {
@@ -278,6 +292,19 @@ impl Reader {
     fn go(&mut self, page: usize) {
         self.entry.at = self.layout.start_of(page);
         self.save();
+    }
+
+    /// Changes the longest row and remembers it for the next book. The page
+    /// is set again around the place being read.
+    fn set_measure(&mut self, measure: usize) {
+        self.measure = measure.clamp(view::MEASURE_MIN, view::MEASURE_MAX);
+        let settings = marks::Settings {
+            measure: Some(self.measure),
+        };
+        self.note = Some(match marks::save_settings(&settings) {
+            Ok(()) => format!("Rows up to {} columns", self.measure),
+            Err(e) => format!("Could not save the setting: {e}"),
+        });
     }
 
     /// A bookmark covers what is open: one page, or both pages of a spread.

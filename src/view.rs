@@ -23,13 +23,18 @@ const TOP: u16 = 3;
 const BOTTOM: u16 = 3;
 /// Minimum blank columns on each side of the text.
 const SIDE: u16 = 4;
-/// Longest row we set. Typesetting convention is 60-80 characters; past that
-/// the eye loses its way back to the next row.
+/// Longest row set by default. Typesetting convention is 60-80 characters;
+/// past that the eye loses its way back to the next row.
 pub const MEASURE: usize = 72;
+/// Bounds and step for changing the measure with `<` / `>`.
+pub const MEASURE_MIN: usize = 24;
+pub const MEASURE_MAX: usize = 240;
+pub const MEASURE_STEP: usize = 4;
 
-/// The text area a pane of `width` x `height` leaves after margins.
-pub fn text_size(width: u16, height: u16) -> (usize, usize) {
-    let w = (width.saturating_sub(2 * SIDE) as usize).clamp(1, MEASURE);
+/// The text area a pane of `width` x `height` leaves after margins, with
+/// rows no longer than `measure`.
+pub fn text_size(width: u16, height: u16, measure: usize) -> (usize, usize) {
+    let w = (width.saturating_sub(2 * SIDE) as usize).clamp(1, measure.max(1));
     let h = height.saturating_sub(TOP + BOTTOM).max(1) as usize;
     (w, h)
 }
@@ -74,6 +79,10 @@ pub enum Cmd {
     Down,
     Enter,
     Back,
+    /// Longer rows (narrower margins).
+    Wider,
+    /// Shorter rows (wider margins).
+    Narrower,
 }
 
 /// A key press under herdr's key names (`space`, `esc`, `ctrl+c`, `b`, ...),
@@ -113,6 +122,8 @@ pub fn cmd_of(key: &str) -> Option<Cmd> {
         "j" | "down" => Cmd::Down,
         "enter" => Cmd::Enter,
         "esc" => Cmd::Back,
+        ">" => Cmd::Wider,
+        "<" => Cmd::Narrower,
         _ => return None,
     })
 }
@@ -233,8 +244,9 @@ mod tests {
 
     #[test]
     fn text_is_capped_at_the_measure() {
-        assert_eq!(text_size(200, 40), (MEASURE, 34));
-        assert_eq!(text_size(50, 40), (42, 34));
+        assert_eq!(text_size(200, 40, MEASURE), (MEASURE, 34));
+        assert_eq!(text_size(50, 40, MEASURE), (42, 34));
+        assert_eq!(text_size(200, 40, 100), (100, 34));
     }
 
     #[test]

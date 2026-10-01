@@ -24,8 +24,9 @@ pub const NAME: &str = env!("CARGO_PKG_NAME");
 /// Long text, laid out as facing pages you turn.
 ///
 /// Space turns the page, b turns back, m bookmarks, g opens the contents,
-/// q or Esc closes the book. Inside herdr the pane is split and the book opens as
-/// a spread across two panes; elsewhere it shows one page at a time.
+/// < and > shorten and lengthen the rows, q or Esc closes the book. Inside
+/// herdr the pane is split and the book opens as a spread across two panes;
+/// elsewhere it shows one page at a time.
 #[derive(Parser)]
 #[command(name = NAME, version, subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
 struct Cli {
@@ -40,6 +41,10 @@ struct Cli {
     /// Show one page at a time, even inside herdr.
     #[arg(long)]
     no_spread: bool,
+
+    /// Longest row, in columns [default: the one last set with < / >, else 72].
+    #[arg(long, value_name = "COLS", value_parser = clap::value_parser!(u16).range(24..=240))]
+    measure: Option<u16>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -83,13 +88,13 @@ fn main() -> Result<ExitCode> {
             let (Some(format), Some(file)) = (cli.format, cli.file) else {
                 unreachable!("clap requires both without a subcommand");
             };
-            open(format, file, cli.no_spread)?;
+            open(format, file, cli.no_spread, cli.measure.map(usize::from))?;
             Ok(ExitCode::SUCCESS)
         }
     }
 }
 
-fn open(format: Format, file: PathBuf, no_spread: bool) -> Result<()> {
+fn open(format: Format, file: PathBuf, no_spread: bool, measure: Option<usize>) -> Result<()> {
     let (bytes, name, book) = if file.as_os_str() == "-" {
         let mut buf = Vec::new();
         std::io::stdin().read_to_end(&mut buf).context("reading stdin")?;
@@ -104,5 +109,5 @@ fn open(format: Format, file: PathBuf, no_spread: bool) -> Result<()> {
         (bytes, name, Some(book))
     };
     let doc = formats::load(format, bytes, &name)?;
-    app::run(doc, book, !no_spread)
+    app::run(doc, book, !no_spread, measure)
 }

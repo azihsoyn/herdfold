@@ -23,6 +23,7 @@ on from left to right. Elsewhere it shows one page at a time.
 | `b` / `←` | turn back |
 | `m` | bookmark what is open (again to remove) |
 | `g` | contents: chapters, then bookmarks |
+| `<` / `>` | shorter / longer rows (narrower / wider margins) |
 | `q` / `Esc` | close the book (`Esc` closes the contents first, if open) |
 
 ## What it does, and what it doesn't
@@ -34,7 +35,9 @@ on from left to right. Elsewhere it shows one page at a time.
   lone `#` title over many `##` sections makes the sections the chapters),
   and a heading is never left alone at the foot of a page.
 - **Rows are at most 72 columns**, with margins around them, however wide the
-  pane. Typesetting has long held 60–80 characters to be readable.
+  pane. Typesetting has long held 60–80 characters to be readable. `<` and
+  `>` change that by 4 columns at a time, and the length you settle on is
+  kept for the next book; `--measure COLS` sets it for one run.
 - **Markdown is rendered**: headings drop their `#` and gain a rule, emphasis,
   code and links are styled, lists, quotes, code blocks and tables are set
   as such. Other formats are shown as they are.
