@@ -202,6 +202,7 @@ impl Reader {
             .filter(|_| spread)
             .and_then(|s| RightPane::open(width, &s.path));
         let mut keys = Vec::new();
+        let mut drawn: Option<(PageView, Mode, ratatui::layout::Size)> = None;
         // Hold the first page until the right pane attaches, so the book
         // opens as a spread rather than flashing a single page first.
         if let (Some(s), Some(_)) = (server, &right) {
@@ -228,19 +229,28 @@ impl Reader {
             );
 
             let (left, right) = self.views();
-            view::draw_whole(terminal, |f| {
-                let area = f.area();
-                let turned = self
-                    .turning
-                    .as_ref()
-                    .is_some_and(|t| t.render(f.buffer_mut(), area, Some(&left)));
-                if !turned {
-                    view::render(f.buffer_mut(), area, Some(&left));
-                }
-                self.draw_overlay(f);
-            })?;
+            // Draw only what changed. Writing to the terminal when nothing
+            // has (even an empty frame) clears a selection made with the
+            // mouse, so a quiet page is left alone.
+            let frame = (left.clone(), self.mode.clone(), area);
+            if self.turning.is_some() || drawn.as_ref() != Some(&frame) {
+                view::draw_whole(terminal, |f| {
+                    let area = f.area();
+                    let turned = self
+                        .turning
+                        .as_ref()
+                        .is_some_and(|t| t.render(f.buffer_mut(), area, Some(&left)));
+                    if !turned {
+                        view::render(f.buffer_mut(), area, Some(&left));
+                    }
+                    self.draw_overlay(f);
+                })?;
+                drawn = Some(frame);
+            }
             if self.turning.as_ref().is_some_and(Turning::done) {
                 self.turning = None;
+                // The last frame drawn was mid-turn; draw the page settled.
+                drawn = None;
             }
             let pages = (left, right);
             if let Some(s) = server

@@ -34,19 +34,28 @@ pub fn run() -> Result<(), CliError> {
 fn draw(terminal: &mut ratatui::DefaultTerminal, client: &mut Client) -> Result<(), CliError> {
     let mut page: Option<PageView> = None;
     let mut turning: Option<Turning> = None;
+    // What was last drawn, so a quiet page is not written again (which would
+    // clear a selection made with the mouse).
+    let mut drawn: Option<(Option<PageView>, ratatui::layout::Size)> = None;
     loop {
-        view::draw_whole(terminal, |f| {
-            let area = f.area();
-            let turned = turning
-                .as_ref()
-                .is_some_and(|t| t.render(f.buffer_mut(), area, page.as_ref()));
-            if !turned {
-                view::render(f.buffer_mut(), area, page.as_ref());
-            }
-        })
-        .map_err(CliError::io)?;
+        let size = terminal.size().map_err(CliError::io)?;
+        let frame = (page.clone(), size);
+        if turning.is_some() || drawn.as_ref() != Some(&frame) {
+            view::draw_whole(terminal, |f| {
+                let area = f.area();
+                let turned = turning
+                    .as_ref()
+                    .is_some_and(|t| t.render(f.buffer_mut(), area, page.as_ref()));
+                if !turned {
+                    view::render(f.buffer_mut(), area, page.as_ref());
+                }
+            })
+            .map_err(CliError::io)?;
+            drawn = Some(frame);
+        }
         if turning.as_ref().is_some_and(Turning::done) {
             turning = None;
+            drawn = None;
         }
         let wait = if turning.is_some() { 16 } else { 30 };
         if event::poll(Duration::from_millis(wait)).map_err(CliError::io)? {
