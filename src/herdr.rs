@@ -25,9 +25,7 @@ impl RightPane {
         if std::env::var_os("HERDR_PANE_ID").is_none() || width < MIN_WIDTH {
             return None;
         }
-        let herdr: PathBuf = std::env::var_os("HERDR_BIN_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| "herdr".into());
+        let herdr = herdr_bin();
         let env = format!("{SOCKET_ENV}={}", socket.display());
         let out = Command::new(&herdr)
             .args([
@@ -70,4 +68,70 @@ impl Drop for RightPane {
 
 fn quote(p: &Path) -> String {
     format!("'{}'", p.display().to_string().replace('\'', r"'\''"))
+}
+
+fn herdr_bin() -> PathBuf {
+    std::env::var_os("HERDR_BIN_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| "herdr".into())
+}
+
+/// An agent to ask: its pane, and what to call it in a status line.
+pub struct Agent {
+    pub target: String,
+    pub label: String,
+}
+
+/// The agent to ask: the one named, else one in this tab, else one in this
+/// workspace, preferring one that is not busy.
+pub fn find_agent(named: Option<&str>) -> Result<Agent, String> {
+    if let Some(name) = named {
+        return Ok(Agent {
+            target: name.to_string(),
+            label: name.to_string(),
+        });
+    }
+    if std::env::var_os("HERDR_PANE_ID").is_none() {
+        return Err("Not inside herdr: no agent to ask".into());
+    }
+    let out = Command::new(herdr_bin())
+        .args(["agent", "list"])
+        .output()
+        .map_err(|e| format!("Could not ask herdr for agents: {e}"))?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let agents = v["result"]["agents"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let tab = std::env::var("HERDR_TAB_ID").unwrap_or_default();
+    let workspace = std::env::var("HERDR_WORKSPACE_ID").unwrap_or_default();
+    let free = |a: &serde_json::Value| matches!(a["agent_status"].as_str(), Some("idle" | "done"));
+    let pick = |scope: &str, id: &str| {
+        let near: Vec<&serde_json::Value> = agents.iter().filter(|a| a[scope] == id).collect();
+        near.iter().find(|a| free(a)).or(near.first()).copied()
+    };
+    let a = pick("tab_id", &tab)
+        .or_else(|| pick("workspace_id", &workspace))
+        .ok_or("No agent in this tab or workspace (or pass --agent)")?;
+    let target = a["pane_id"].as_str().unwrap_or_default().to_string();
+    let label = format!("{} in {}", a["agent"].as_str().unwrap_or("agent"), target);
+    Ok(Agent { target, label })
+}
+
+/// Submits `text` to the agent at `target`. herdr reports failures (a busy
+/// or blocked agent, an unknown name) as JSON on stderr; their message is
+/// returned.
+pub fn prompt(target: &str, text: &str) -> Result<(), String> {
+    let out = Command::new(herdr_bin())
+        .args(["agent", "prompt", target, text])
+        .output()
+        .map_err(|e| format!("Could not run herdr: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err: serde_json::Value = serde_json::from_slice(&out.stderr).unwrap_or_default();
+    Err(err["error"]["message"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| String::from_utf8_lossy(&out.stderr).trim().to_string()))
 }

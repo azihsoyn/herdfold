@@ -1,6 +1,8 @@
 //! The reader: holds the place in the book, turns pages, keeps bookmarks and
 //! notes, and answers the socket API for the pane showing the right-hand page.
 
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -12,10 +14,10 @@ use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
-use crate::api::{Call, EventData, PROTOCOL, Request, ResponseResult};
+use crate::api::{Call, EventData, PROTOCOL, Request, ResponseResult, SOCKET_ENV};
 use crate::doc::Document;
 use crate::doc::{Kind, Line as DocLine, Style as TextStyle};
-use crate::herdr::RightPane;
+use crate::herdr::{self, RightPane};
 use crate::layout::{Layout, Pos};
 use crate::marks::{self, Anchor, Author, Entry, Note, NoteDisplay};
 use crate::server::{ConnId, Hub, Inbound, Server};
@@ -32,11 +34,13 @@ enum Mode {
     Shelf(usize),
     /// Choosing a row; the cursor is on the row that starts at this place.
     Select(Pos),
-    /// Writing a note on a page or a row.
+    /// Writing a note on a page or a row, or (`ask`) a question about it
+    /// for the agent.
     Writing {
         anchor: Anchor,
         at: Pos,
         text: String,
+        ask: bool,
     },
 }
 
@@ -86,6 +90,12 @@ struct Reader {
     pane_width: u16,
     /// Whether settings are written to disk (not under test).
     keep_settings: bool,
+    /// The agent named with `--agent`, if any.
+    agent: Option<String>,
+    /// Where this reader's socket is, for an agent to write notes back.
+    socket: Option<PathBuf>,
+    /// Outcomes of work done off the main loop (asking the agent).
+    background: (Sender<String>, Receiver<String>),
 }
 
 /// What a layout depends on besides the document.
@@ -108,6 +118,7 @@ pub fn run(
     spread: bool,
     measure: Option<usize>,
     animate: Option<bool>,
+    agent: Option<String>,
 ) -> Result<()> {
     let entry = book.as_deref().and_then(marks::load).unwrap_or_default();
     let settings = marks::settings();
@@ -134,10 +145,16 @@ pub fn run(
         laid_for: None,
         pane_width: 0,
         keep_settings: true,
+        agent,
+        socket: None,
+        background: mpsc::channel(),
     };
-    let server = if spread { Server::listen().ok() } else { None };
+    // Always listening: the right-hand page attaches here, and an agent
+    // writes its answers back here.
+    let server = Server::listen().ok();
+    reader.socket = server.as_ref().map(|s| s.path.clone());
     let mut terminal = ratatui::init();
-    let result = reader.run(&mut terminal, server.as_ref());
+    let result = reader.run(&mut terminal, server.as_ref(), spread);
     ratatui::restore();
     result
 }
@@ -153,9 +170,16 @@ fn starting_measure(asked: Option<usize>, book: Option<usize>, last: Option<usiz
 }
 
 impl Reader {
-    fn run(&mut self, terminal: &mut DefaultTerminal, server: Option<&Server>) -> Result<()> {
+    fn run(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        server: Option<&Server>,
+        spread: bool,
+    ) -> Result<()> {
         let width = terminal.size()?.width;
-        let right = server.and_then(|s| RightPane::open(width, &s.path));
+        let right = server
+            .filter(|_| spread)
+            .and_then(|s| RightPane::open(width, &s.path));
         let mut keys = Vec::new();
         // Hold the first page until the right pane attaches, so the book
         // opens as a spread rather than flashing a single page first.
@@ -221,6 +245,9 @@ impl Reader {
                     self.answer(&s.hub, msg, &mut keys);
                 }
             }
+            while let Ok(status) = self.background.1.try_recv() {
+                self.status = Some(status);
+            }
             for key in std::mem::take(&mut keys) {
                 if self.handle(&key) {
                     self.save();
@@ -273,6 +300,27 @@ impl Reader {
                 // Handled as if typed here, text included while writing a note.
                 keys.extend(p.keys);
                 ResponseResult::Ok
+            }
+            Call::NoteAdd(p) => {
+                if p.text.trim().is_empty() {
+                    return hub.fail(conn, id, "invalid_params", "a note needs text");
+                }
+                let at = p.at.unwrap_or_else(|| self.layout.start_of(self.page()));
+                let page = self.layout.page_of(at) + 1;
+                self.entry.add_note(Note {
+                    at,
+                    anchor: p.anchor,
+                    text: p.text.trim().to_string(),
+                    by: p.by,
+                    question: p.question,
+                });
+                self.notes_rev += 1;
+                self.status = Some(match p.by {
+                    Author::Agent => format!("A note from the agent on p.{page}"),
+                    Author::Reader => format!("Note kept on p.{page}"),
+                });
+                self.save();
+                ResponseResult::NoteAdded { page }
             }
         };
         hub.reply(conn, id, result);
@@ -503,11 +551,12 @@ impl Reader {
                     self.mode = Mode::Shelf(sel);
                 }
             }
-            Cmd::NotePage => {
+            Cmd::NotePage | Cmd::Ask => {
                 self.mode = Mode::Writing {
                     anchor: Anchor::Page,
                     at: self.layout.start_of(page),
                     text: String::new(),
+                    ask: cmd == Cmd::Ask,
                 };
             }
             Cmd::Select => match self.open_rows().first() {
@@ -583,11 +632,12 @@ impl Reader {
         match cmd {
             Cmd::Up => self.mode = Mode::Select(rows[i.saturating_sub(1)]),
             Cmd::Down => self.mode = Mode::Select(rows[(i + 1).min(rows.len() - 1)]),
-            Cmd::Enter => {
+            Cmd::Enter | Cmd::Ask => {
                 self.mode = Mode::Writing {
                     anchor: Anchor::Line,
                     at,
                     text: String::new(),
+                    ask: cmd == Cmd::Ask,
                 };
             }
             Cmd::Quit => return true,
@@ -598,10 +648,24 @@ impl Reader {
 
     /// A key while writing a note: text, or Enter to keep it, Esc to drop it.
     fn write(&mut self, key: &str) {
-        let Mode::Writing { anchor, at, text } = &mut self.mode else {
+        let Mode::Writing {
+            anchor,
+            at,
+            text,
+            ask,
+        } = &mut self.mode
+        else {
             return;
         };
         match key {
+            "enter" if *ask => {
+                let question = text.trim().to_string();
+                let (anchor, at) = (*anchor, *at);
+                self.mode = Mode::Reading;
+                if !question.is_empty() {
+                    self.ask(&question, anchor, at);
+                }
+            }
             "enter" => {
                 let text = text.trim().to_string();
                 let (anchor, at) = (*anchor, *at);
@@ -708,6 +772,83 @@ impl Reader {
         });
     }
 
+    /// Sends the question, with the open pages, to an agent beside the
+    /// book. The agent answers in its own pane, and is asked to keep a short
+    /// answer in the book as a note where the question was asked.
+    fn ask(&mut self, question: &str, anchor: Anchor, at: Pos) {
+        let agent = match herdr::find_agent(self.agent.as_deref()) {
+            Ok(a) => a,
+            Err(e) => {
+                self.status = Some(e);
+                return;
+            }
+        };
+        let prompt = self.prompt(question, anchor, at);
+        self.status = Some(format!("Asking {}…", agent.label));
+        let done = self.background.0.clone();
+        std::thread::spawn(move || {
+            let status = match herdr::prompt(&agent.target, &prompt) {
+                Ok(()) => format!("Asked {}: the answer comes back as a note", agent.label),
+                Err(e) => format!("Could not ask {}: {e}", agent.label),
+            };
+            let _ = done.send(status);
+        });
+    }
+
+    /// The question as the agent receives it: where the reader is, what is
+    /// on the open pages, and how to put the answer back in the book.
+    fn prompt(&self, question: &str, anchor: Anchor, at: Pos) -> String {
+        let pages = self.open_pages();
+        let chapter = self
+            .chapter_pages
+            .iter()
+            .rposition(|&p| p <= pages.start)
+            .map(|i| format!(", in \"{}\"", self.doc.chapters[i].title))
+            .unwrap_or_default();
+        let source = self.book.as_deref().unwrap_or("stdin");
+        let mut out = format!(
+            "Someone reading \"{}\" ({source}) in herdbook asks, at p.{} of {}{chapter}:\n\n{question}\n",
+            self.doc.title,
+            pages.start + 1,
+            self.layout.page_count(),
+        );
+        if anchor == Anchor::Line {
+            out += &format!(
+                "\nThey are asking about this row:\n> {}\n",
+                self.row_text(at)
+            );
+        }
+        out += "\nThe pages open in front of them:\n";
+        for p in pages {
+            out += &format!("\n--- p.{} ---\n", p + 1);
+            for row in self.layout.page(p) {
+                out += &row.text;
+                out += "\n";
+            }
+        }
+        out += "\nAnswer them here. ";
+        if let Some(socket) = &self.socket {
+            let exe = std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "herdbook".into());
+            let anchor = match anchor {
+                Anchor::Page => "page",
+                Anchor::Line => "line",
+            };
+            out += &format!(
+                "Then keep a short version of the answer in their book, as a note where they asked, by running:\n\n\
+                 {SOCKET_ENV}={} {} note add --line {} --offset {} --anchor {anchor} --question {} {}\n",
+                shell_quote(&socket.display().to_string()),
+                shell_quote(&exe),
+                at.line,
+                at.offset,
+                shell_quote(question),
+                shell_quote("<your short answer>"),
+            );
+        }
+        out
+    }
+
     /// A bookmark covers what is open: one page, or both pages of a spread.
     fn toggle_mark(&mut self, page: usize) {
         let open = page..page + self.step();
@@ -806,10 +947,18 @@ impl Reader {
                     *sel,
                 );
             }
-            Mode::Writing { anchor, at, text } => {
-                let title = match anchor {
-                    Anchor::Page => format!(" Note on p.{} ", self.layout.page_of(*at) + 1),
-                    Anchor::Line => " Note on this row ".to_string(),
+            Mode::Writing {
+                anchor,
+                at,
+                text,
+                ask,
+            } => {
+                let page = self.layout.page_of(*at) + 1;
+                let title = match (anchor, ask) {
+                    (Anchor::Page, false) => format!(" Note on p.{page} "),
+                    (Anchor::Line, false) => " Note on this row ".to_string(),
+                    (Anchor::Page, true) => format!(" Ask the agent about p.{page} "),
+                    (Anchor::Line, true) => " Ask the agent about this row ".to_string(),
                 };
                 draw_input(f, &title, text);
             }
@@ -848,6 +997,10 @@ impl Reader {
         f.render_widget(Clear, popup);
         f.render_stateful_widget(list, popup, &mut state);
     }
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// The mark a note is listed and shown with.
@@ -930,6 +1083,9 @@ mod tests {
             laid_for: None,
             pane_width: 80,
             keep_settings: false,
+            agent: None,
+            socket: None,
+            background: mpsc::channel(),
         };
         r.fit((20, height), false);
         r
@@ -1019,6 +1175,21 @@ mod tests {
             .map(|m| (m.row, m.text))
             .collect();
         assert_eq!(notes, [(0, "✎ p".to_string()), (1, "▎ x".to_string())]);
+    }
+
+    #[test]
+    fn the_question_carries_the_pages_and_the_way_back() {
+        let mut r = reader(&["one", "two's", "three"], 3);
+        r.socket = Some(PathBuf::from("/tmp/hb.sock"));
+        let at = r.open_rows()[1];
+        let p = r.prompt("why?", Anchor::Line, at);
+        assert!(p.contains("at p.1 of 1:\n\nwhy?\n"));
+        assert!(p.contains("this row:\n> two's\n"));
+        assert!(p.contains("--- p.1 ---\none\ntwo's\nthree\n"));
+        assert!(p.contains("HERDBOOK_SOCKET_PATH='/tmp/hb.sock' "));
+        assert!(p.contains(
+            "note add --line 1 --offset 0 --anchor line --question 'why?' '<your short answer>'"
+        ));
     }
 
     #[test]

@@ -2,11 +2,13 @@ mod api;
 mod app;
 mod attach;
 mod cli;
+mod client;
 mod doc;
 mod formats;
 mod herdr;
 mod layout;
 mod marks;
+mod note;
 mod server;
 mod turn;
 mod view;
@@ -56,6 +58,10 @@ struct Cli {
     #[arg(long, overrides_with = "animation")]
     no_animation: bool,
 
+    /// The agent `?` asks: a herdr agent name or pane id [default: one in this tab, else in this workspace].
+    #[arg(long, value_name = "NAME|PANE")]
+    agent: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -65,9 +71,36 @@ enum Command {
     /// Reader helpers over the socket API
     #[command(subcommand)]
     Reader(ReaderCommand),
+    /// Notes in the book open in the reader at $HERDBOOK_SOCKET_PATH
+    #[command(subcommand)]
+    Note(NoteCommand),
     /// Inspect the socket API
     #[command(subcommand)]
     Api(ApiCommand),
+}
+
+#[derive(Subcommand)]
+enum NoteCommand {
+    /// Write a note in the book
+    Add {
+        /// The note.
+        text: String,
+        /// Source line the note is on [default: the page open now].
+        #[arg(long)]
+        line: Option<usize>,
+        /// Character offset into that line.
+        #[arg(long, requires = "line")]
+        offset: Option<usize>,
+        /// On the page, or on the row holding the place.
+        #[arg(long, value_enum, default_value = "page")]
+        anchor: marks::Anchor,
+        /// Who wrote it.
+        #[arg(long, value_enum, default_value = "agent")]
+        by: marks::Author,
+        /// The question the note answers.
+        #[arg(long)]
+        question: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -93,6 +126,17 @@ fn main() -> Result<ExitCode> {
         Some(Command::Reader(ReaderCommand::Attach)) => {
             Ok(cli::finish("reader:attach", attach::run()))
         }
+        Some(Command::Note(NoteCommand::Add {
+            text,
+            line,
+            offset,
+            anchor,
+            by,
+            question,
+        })) => {
+            let params = note::params(text, note::place(line, offset), anchor, by, question);
+            Ok(cli::finish("note:add", note::add(params)))
+        }
         Some(Command::Api(ApiCommand::Schema { json, output })) => {
             Ok(cli::finish("api:schema", cli::api_schema(json, output)))
         }
@@ -110,6 +154,7 @@ fn main() -> Result<ExitCode> {
                     (_, true) => Some(false),
                     _ => None,
                 },
+                cli.agent,
             )?;
             Ok(ExitCode::SUCCESS)
         }
@@ -122,6 +167,7 @@ fn open(
     no_spread: bool,
     measure: Option<usize>,
     animate: Option<bool>,
+    agent: Option<String>,
 ) -> Result<()> {
     let (bytes, name, book) = if file.as_os_str() == "-" {
         let mut buf = Vec::new();
@@ -139,5 +185,5 @@ fn open(
         (bytes, name, Some(book))
     };
     let doc = formats::load(format, bytes, &name)?;
-    app::run(doc, book, !no_spread, measure, animate)
+    app::run(doc, book, !no_spread, measure, animate, agent)
 }

@@ -23,7 +23,8 @@ on from left to right. Elsewhere it shows one page at a time.
 | `b` / `←` | turn back |
 | `m` | bookmark what is open (again to remove) |
 | `n` | write a note on the page |
-| `v` | choose a row (`j` / `k`), then `Enter` to write a note on it |
+| `v` | choose a row (`j` / `k`), then `Enter` to write a note on it, or `?` to ask about it |
+| `?` | ask the agent about the open pages |
 | `l` | bookmarks and notes: `Enter` to go, `d` to remove |
 | `N` | notes as footnotes / in the margin / as marks only (remembered) |
 | `g` | contents |
@@ -56,6 +57,11 @@ on from left to right. Elsewhere it shows one page at a time.
   footnotes at the foot of the page (the page then holds less, and the
   text runs on to the next), in the outer margin beside their row (when
   the margin is wide enough; `<` makes room), or not at all.
+- **The agent beside the book can be asked.** `?` sends the question, the
+  open pages (and the chosen row, from `v`), to a herdr agent in the same
+  tab (else the same workspace, or the one named with `--agent`). It
+  answers in its own pane, and keeps a short answer in the book as a note
+  (`✦`) by running `herdbook note add`.
 - **Your place is kept** per book in `~/.local/share/herdbook/marks.json`
   (`$XDG_DATA_HOME` if set), as a position in the text rather than a page
   number, so it survives a change of pane size.
@@ -85,7 +91,9 @@ socket, whose path it hands to the panes it opens as `HERDBOOK_SOCKET_PATH`.
 {"event":"page_shown","data":{"type":"page_shown","left":{..},"right":{..}}}
 ```
 
-Failures are `{"id":..,"error":{"code":..,"message":..}}`. The right-hand
+`note.add` writes a note into the open book (`herdbook note add` is the same
+from a shell, which is how an agent answers). Failures are
+`{"id":..,"error":{"code":..,"message":..}}`. The right-hand
 page is drawn by `herdbook reader attach`, an ordinary client of this API.
 `herdbook api schema --json` prints the full schema; like herdr's own
 commands, CLI failures are written to stderr as

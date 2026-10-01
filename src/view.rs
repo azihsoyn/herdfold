@@ -123,6 +123,8 @@ pub enum Cmd {
     Shelf,
     /// Change how notes are shown.
     NoteDisplay,
+    /// Ask the agent about the page, or the chosen row.
+    Ask,
     /// Remove the bookmark or note chosen in the list.
     Delete,
 }
@@ -174,6 +176,7 @@ pub fn cmd_of(key: &str) -> Option<Cmd> {
         "v" => Cmd::Select,
         "l" => Cmd::Shelf,
         "N" => Cmd::NoteDisplay,
+        "?" => Cmd::Ask,
         "d" => Cmd::Delete,
         _ => return None,
     })

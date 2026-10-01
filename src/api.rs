@@ -8,6 +8,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::layout::Pos;
+use crate::marks::{Anchor, Author};
 use crate::turn::Turn;
 use crate::view::PageView;
 
@@ -40,6 +42,9 @@ pub enum Call {
     /// Keys pressed elsewhere, by herdr's key names (`space`, `esc`, `ctrl+c`, `b`, ...).
     #[serde(rename = "reader.send_keys")]
     ReaderSendKeys(ReaderSendKeysParams),
+    /// Write a note in the book, as an agent answering a question does.
+    #[serde(rename = "note.add")]
+    NoteAdd(NoteAddParams),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -66,6 +71,26 @@ pub struct ReaderSizeParams {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NoteAddParams {
+    pub text: String,
+    /// Where the note goes; the page open now when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Pos>,
+    #[serde(default)]
+    pub anchor: Anchor,
+    /// Who wrote it; an agent when absent.
+    #[serde(default = "agent")]
+    pub by: Author,
+    /// The question the note answers, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+}
+
+fn agent() -> Author {
+    Author::Agent
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ReaderSendKeysParams {
     pub keys: Vec<String>,
 }
@@ -80,9 +105,16 @@ pub struct SuccessResponse {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseResult {
-    Pong { version: String, protocol: u32 },
+    Pong {
+        version: String,
+        protocol: u32,
+    },
     SubscriptionStarted,
     ReaderAttached,
+    /// The note is in the book, on page `page` (1-based) as now set.
+    NoteAdded {
+        page: usize,
+    },
     Ok,
 }
 
