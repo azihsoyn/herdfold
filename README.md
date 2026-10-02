@@ -20,34 +20,91 @@ gh pr diff 123 | herdfold --format diff -
 
 Inside [herdr](https://herdr.dev) the pane splits in two and the book opens
 as a spread: left page in one pane, right page in the other, the text running
-on from left to right. Elsewhere it shows one page at a time.
+on from one to the next. Elsewhere it shows one page at a time.
+
+## Reading
+
+- **Formats are named, never guessed**: `text`, `md` (rendered: headings,
+  emphasis, lists, quotes, code blocks, tables), `diff` (each file a
+  chapter; stdin works) and `epub`.
+- **Pages are cut by the height of the pane**, and rows are held to 72
+  columns with margins around them, however wide the pane; `<` and `>`
+  change that per book. Chapters open on a new page, set a quarter of the
+  way down, as a printed book sets them.
+- **A turn is drawn**: the free edge of the sheet (`┃`) crosses the right
+  page and then the left. `a` switches that off for good.
+- **Books bound on the right read from the right.** `D` turns a book round
+  for pages that run right to left, as Japanese books and manga do: the
+  right page comes first, turns sweep the other way, and the arrows follow.
+  An EPUB that declares `page-progression-direction="rtl"` opens that way.
+- **The contents** (`g`) open as a drawer down the side, the chapter you
+  are in pointed at; `←` / `→` fold and unfold sections.
+- **Search** (`/` or `Ctrl-F`) finds as you type; `n` / `N` step through
+  the finds, `l` lists them with the words around each.
+- **Your place is kept** per book, as a position in the text rather than a
+  page number, so it survives a change of pane size.
+
+## Marking
+
+- **Bookmarks are ribbons** hanging from the top of a page into the margin,
+  in six colours. In a spread, `m` marks the page of the pane you press it
+  in. Click a ribbon to recolour it or take it out.
+- **Notes** go on a page (`n`, a pencil `✎` by the running head), on a row
+  (`v`, a stroke `▎` in the margin), or on text you choose with the mouse.
+  `N` shows them as footnotes, in the outer margin, or as marks only.
+- **Markers**: drag over text, then `m` lays a highlighter over it. Click a
+  marker to recolour it, write its note, or remove it. The book takes the
+  mouse for this, since the terminal's own selection would run across
+  both panes of a spread; `y` copies the chosen text.
+- `l` lists bookmarks and notes together.
+
+## Pictures
+
+Inside herdr, pictures in Markdown (local files) and in EPUB books are set
+on the page, on rows the layout leaves for them, never split across pages.
+PNG, JPEG, GIF, WebP and BMP are read. herdr draws its panes itself, so
+the terminal's own image protocols (`imgcat` and the like) do not get
+through it; herdfold uses herdr's graphics API instead. Pictures inside an
+EPUB are kept in `~/.cache/herdfold/pictures` (`$XDG_CACHE_HOME` if set).
+Outside herdr, and for pictures on the web, their description is shown.
+
+## Asking the agent
+
+`?` sends a question, with the open pages (and the row or text you chose),
+to a herdr agent in the same tab (else the same workspace, or the one named
+with `--agent`). It answers in its own pane, and keeps a short answer in the
+book as a note (`✦`) by running `herdfold note add`.
+
+## Keys
 
 | Key | |
 | --- | --- |
-| `Space` / `→` | turn the page |
+| `Space` / `→` | turn the page (`←` when the book runs right to left) |
 | `b` / `←` | turn back |
-| `m` | bookmark the page (in a spread, the page of the pane it is pressed in; again to remove) |
-| `c` | change the colour of the bookmark here |
+| `g` | contents |
+| `/` or `Ctrl-F` | search |
+| `m` | bookmark the page (again to remove) |
+| `c` | colour of the bookmark here |
 | `n` | write a note on the page |
-| drag | choose text with the mouse, then `m` marker · `n` note · `?` ask · `y` copy |
-| click | on a ribbon: `c` colour · `d` remove; on a marker: `c` colour · `n` note · `d` remove |
-| `v` | choose a row (`j` / `k`), then `Enter` to write a note on it, or `?` to ask about it |
+| `v` | choose a row: `Enter` to note it, `?` to ask about it |
+| drag | choose text: `m` marker · `n` note · `?` ask · `y` copy |
+| click | on a ribbon or a marker: colour, note, remove |
+| `l` | bookmarks and notes |
+| `N` | notes as footnotes / in the margin / marks only |
 | `?` | ask the agent about the open pages |
-| `l` | bookmarks and notes: `Enter` to go, `d` to remove |
-| `N` | notes as footnotes / in the margin / as marks only (remembered) |
-| `g` | contents, in a drawer down the side |
-| `/` or `Ctrl-F` | search as you type; then `n` / `N` next and previous, `l` the list of finds |
-| `<` / `>` | shorter / longer rows (narrower / wider margins) |
-| `a` | page-turn animation on / off (remembered) |
-| `D` | pages run left to right / right to left (remembered per book) |
+| `<` / `>` | shorter / longer rows |
+| `a` | page-turn animation on / off |
+| `D` | pages run left to right / right to left |
 | `h` | list the keys |
 | `T` | a tip (one greets each book until you tick "don't show again") |
-| `q` / `Esc` | close the book (`Esc` closes the contents first, if open) |
+| `q` / `Esc` | close the book |
+
+## Configuration
 
 Every key can be rebound, as herdr's own are, under `[keys]` in
-`~/.config/herdfold/config.toml` (`$XDG_CONFIG_HOME` if set). Name an
-action and give a key or a list of keys, by herdr's key names; that action
-loses its defaults, and `""` leaves it unbound:
+`~/.config/herdfold/config.toml` (`$XDG_CONFIG_HOME` if set). Name an action
+and give a key or a list of keys, by herdr's key names; that action loses its
+defaults, and `""` leaves it unbound:
 
 ```toml
 [keys]
@@ -59,66 +116,24 @@ ask = "A"
 
 The actions: `next_page` `previous_page` `contents` `search` `bookmark`
 `bookmark_color` `note` `choose_row` `list` `note_display` `ask`
-`shorter_rows` `longer_rows` `animation` `direction` `help` `tip` `up` `down` `enter`
-`remove` `back` `quit`. `herdfold config check` reports what is wrong with
-the file; `herdfold config reset-keys` backs it up and removes `[keys]`.
+`shorter_rows` `longer_rows` `animation` `direction` `help` `tip` `up` `down`
+`enter` `remove` `back` `quit`. `herdfold config check` reports what is wrong
+with the file; `herdfold config reset-keys` backs it up and removes `[keys]`.
 The key list (`h`) and the tips show the keys as bound.
 
-## What it does, and what it doesn't
+Your place, bookmarks, notes, row length and direction are kept per book in
+`~/.local/share/herdfold/marks.json`; choices that hold for every book (the
+animation, how notes are shown, the colours last chosen, tips) in
+`settings.json` beside it (`$XDG_DATA_HOME` if set). `--measure COLS`,
+`--no-animation` and `--no-spread` decide those for one run.
 
-- **Pages are cut mechanically**, by the height of the pane. The text is never
-  read for meaning.
-- **Chapters open on a new page**, set a quarter of the way down, as a book
-  sets its chapter openings. Only the top tier the input repeats counts (a
-  lone `#` title over many `##` sections makes the sections the chapters),
-  and a heading is never left alone at the foot of a page.
-- **Rows are at most 72 columns**, with margins around them, however wide the
-  pane. Typesetting has long held 60–80 characters to be readable. `<` and
-  `>` change that by 4 columns at a time. The length is kept per book, and
-  a book opened for the first time starts at the length last set in any
-  book; `--measure COLS` sets it for one run.
-- **Markdown is rendered**: headings drop their `#` and gain a rule, emphasis,
-  code and links are styled, lists, quotes, code blocks and tables are set
-  as such. Other formats are shown as they are.
-- **Chapters come only from the input**: an EPUB's table of contents, Markdown
-  headings, the files of a diff. Plain text has none, and none are guessed.
-- **The format is always named** with `--format`; nothing is detected.
-- **Notes are written in the book**: on a page (a pencil `✎` by the running
-  head), or on a row (a stroke `▎` in the margin beside it). They are kept
-  with the bookmarks, and listed with them under `l`. Their text is shown as
-  footnotes at the foot of the page (the page then holds less, and the
-  text runs on to the next), in the outer margin beside their row (when
-  the margin is wide enough; `<` makes room), or not at all.
-- **Text is chosen with the mouse**, within the page (or across both pages
-  of a spread), and can be marked with a yellow highlighter, noted, asked
-  about, or copied. Markers come in the ribbons' six colours (yellow
-  first; new ones take the colour last chosen); clicking one offers to
-  recolour it, write its note, or remove it. The book takes the mouse for this, so the terminal's
-  own selection, which in herdr would run across both panes, is not used.
-- **The agent beside the book can be asked.** `?` sends the question, the
-  open pages (and the chosen row, from `v`), to a herdr agent in the same
-  tab (else the same workspace, or the one named with `--agent`). It
-  answers in its own pane, and keeps a short answer in the book as a note
-  (`✦`) by running `herdfold note add`.
-- **A bookmark is a ribbon** hanging from the top of its page into the
-  margin by the gutter, in one of six colours (`c` changes it; new
-  bookmarks take the colour last chosen).
-- **Your place is kept** per book in `~/.local/share/herdfold/marks.json`
-  (`$XDG_DATA_HOME` if set), as a position in the text rather than a page
-  number, so it survives a change of pane size.
-- **Books bound on the right read from the right.** `D` turns a book round
-  so its pages run right to left, as Japanese books and manga do: the right
-  page comes first, turns sweep the other way, and the arrows follow. Each
-  book keeps its own direction; an EPUB that declares
-  `page-progression-direction="rtl"` opens that way.
-- **There is no scrolling.** Only turning. A turn is drawn: the free edge of
-  the sheet (`┃`) crosses the right page and then the left, the next pages
-  appearing behind it, in about a third of a second. `a` switches this off
-  (or back on) for every book from then on; `--no-animation` /
-  `--animation` decide it for one run. Jumps from the contents are not
-  animated.
+## What it does not do
 
-`--no-spread` keeps one page at a time even inside herdr.
+- It never reads the text for meaning: pages are cut by height, and
+  chapters come only from the input (an EPUB's table of contents, Markdown
+  headings, the files of a diff). Plain text has none, and none are guessed.
+- It never guesses the format.
+- It never scrolls. Only turning.
 
 ## Socket API
 
@@ -127,7 +142,7 @@ socket, whose path it hands to the panes it opens as `HERDFOLD_SOCKET_PATH`.
 
 ```
 {"id":"1","method":"ping","params":{}}
-{"id":"1","result":{"type":"pong","version":"0.1.0","protocol":1}}
+{"id":"1","result":{"type":"pong","version":"0.2.0","protocol":1}}
 
 {"id":"2","method":"reader.send_keys","params":{"keys":["space"]}}
 {"id":"2","result":{"type":"ok"}}
@@ -137,11 +152,11 @@ socket, whose path it hands to the panes it opens as `HERDFOLD_SOCKET_PATH`.
 {"event":"page_shown","data":{"type":"page_shown","left":{..},"right":{..}}}
 ```
 
-The right-hand pane passes its mouse presses on with `reader.send_mouse`.
-`note.add` writes a note into the open book (`herdfold note add` is the same
-from a shell, which is how an agent answers). Failures are
-`{"id":..,"error":{"code":..,"message":..}}`. The right-hand
-page is drawn by `herdfold reader attach`, an ordinary client of this API.
+The right-hand page is drawn by `herdfold reader attach`, an ordinary
+client of this API, which passes its keys and mouse presses back with
+`reader.send_keys` and `reader.send_mouse`. `note.add` writes a note into
+the open book (`herdfold note add` is the same from a shell, which is how
+an agent answers). Failures are `{"id":..,"error":{"code":..,"message":..}}`.
 `herdfold api schema --json` prints the full schema; like herdr's own
 commands, CLI failures are written to stderr as
 `{"id":"cli:<group>:<command>","error":{..}}` with exit code 1.
@@ -160,8 +175,8 @@ Or the prebuilt binary for macOS or Linux, from the
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/azihsoyn/herdfold/releases/latest/download/herdfold-installer.sh | sh
 ```
 
-The spread needs [herdr](https://herdr.dev); without it, herdfold shows one
-page at a time.
+The spread and pictures need [herdr](https://herdr.dev); without it,
+herdfold shows one page at a time, and pictures by their description.
 
 ## License
 
