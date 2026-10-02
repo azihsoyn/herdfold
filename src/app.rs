@@ -570,6 +570,11 @@ impl Reader {
                 }
                 let style = if Some(i) == *current { shown } else { found };
                 paint.push((from, to, style));
+                if Some(i) == *current
+                    && let Some(row) = self.layout.row_of(n, from)
+                {
+                    rows[pad + row].pointer = true;
+                }
             }
         }
         for (i, r) in self.layout.page(n).iter().enumerate() {
@@ -2529,8 +2534,11 @@ mod tests {
             panic!("not searching");
         };
         assert_eq!((hits.len(), *current), (2, Some(0)));
-        // The find on the open page is painted.
-        assert!(r.views().0.rows[0].spans.iter().any(|s| s.style.found));
+        // The find on the open page is painted as the one shown, its row
+        // pointed at.
+        let row = &r.views().0.rows[0];
+        assert!(row.pointer);
+        assert!(row.spans.iter().any(|s| s.style.found && s.style.selected));
         keys(&mut r, &["enter", "n"]);
         assert_eq!(r.page(), 3);
         keys(&mut r, &["n"]);

@@ -93,6 +93,9 @@ fn is_false(b: &bool) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PageRow {
     pub spans: Vec<Styled>,
+    /// The find being shown is on this row; a pointer is drawn beside it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pointer: bool,
     /// A note is attached to this row; a mark is drawn beside it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub marker: bool,
@@ -278,11 +281,14 @@ pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
         draw_ribbon(buf, area, x, w, v.side, color);
     }
 
-    // A row with a note gets a mark in the margin, like a highlighter's stroke.
+    // A row with a note gets a mark in the margin, like a highlighter's
+    // stroke; the row of the find being shown, a pointer.
     if x >= area.x + 2 {
         for (i, r) in v.rows.iter().take(text_h as usize).enumerate() {
-            if r.marker {
-                let y = area.y + TOP + i as u16;
+            let y = area.y + TOP + i as u16;
+            if r.pointer {
+                buf[(x - 2, y)].set_symbol("▶").set_fg(CURRENT_FIND);
+            } else if r.marker {
                 buf[(x - 2, y)].set_symbol("▎").set_fg(Color::Yellow);
             }
         }
@@ -321,6 +327,9 @@ fn draw_margin_notes(buf: &mut Buffer, area: Rect, x: u16, w: u16, text_h: u16, 
         next_free = row + 1;
     }
 }
+
+/// The find being shown, set apart from the other finds.
+const CURRENT_FIND: Color = Color::Indexed(208);
 
 /// The reader's own panels (tips, keys, lists, messages) sit on a ground
 /// of their own, so they are never taken for the book's text.
@@ -472,11 +481,20 @@ pub fn style_of(t: TextStyle) -> Style {
     if let Some(c) = t.marker {
         s = s.bg(ribbon_color(c)).fg(Color::Black);
     }
-    if t.found {
-        s = s.bg(Color::Cyan).fg(Color::Black);
-    }
-    if t.selected {
-        s = s.add_modifier(Modifier::REVERSED);
+    match (t.found, t.selected) {
+        // The find being shown: unmistakable.
+        (true, true) => {
+            s = s
+                .bg(CURRENT_FIND)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD);
+        }
+        // Other finds: marked, but quietly.
+        (true, false) => {
+            s = s.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
+        }
+        (false, true) => s = s.add_modifier(Modifier::REVERSED),
+        (false, false) => {}
     }
     s
 }
