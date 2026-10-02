@@ -65,6 +65,8 @@ enum Mode {
         hits: Vec<(Pos, Pos)>,
         current: Option<usize>,
         typing: Option<Pos>,
+        /// The list of finds, open at this row.
+        list: Option<usize>,
     },
     /// Writing a note on a page or a row, or (`ask`) a question about it
     /// for the agent.
@@ -777,6 +779,7 @@ impl Reader {
                     hits: Vec::new(),
                     current: None,
                     typing: Some(self.entry.at),
+                    list: None,
                 };
             }
             Cmd::Tip => {
@@ -1168,10 +1171,29 @@ impl Reader {
             hits,
             current,
             typing,
+            list,
         } = &mut self.mode
         else {
             return false;
         };
+        if let Some(sel) = *list {
+            let last = hits.len().saturating_sub(1);
+            match key {
+                "up" | "k" => *list = Some(sel.saturating_sub(1)),
+                "down" | "j" => *list = Some((sel + 1).min(last)),
+                "pageup" => *list = Some(sel.saturating_sub(10)),
+                "pagedown" => *list = Some((sel + 10).min(last)),
+                "enter" => {
+                    *list = None;
+                    *current = Some(sel);
+                    let page = self.layout.page_of(hits[sel].0);
+                    self.go(page);
+                }
+                "esc" | "l" | "q" | "tab" => *list = None,
+                _ => {}
+            }
+            return true;
+        }
         if let Some(origin) = *typing {
             match key {
                 "enter" => *typing = None,
@@ -1208,6 +1230,12 @@ impl Reader {
             "N" | "up" | "ctrl+p" => step(-1),
             "/" | "ctrl+f" => {
                 *typing = Some(self.entry.at);
+                return true;
+            }
+            "l" | "tab" => {
+                if !hits.is_empty() {
+                    *list = Some(current.unwrap_or(0));
+                }
                 return true;
             }
             "esc" | "q" => {
@@ -1615,7 +1643,7 @@ impl Reader {
                 | Mode::Selected { .. }
                 | Mode::Marker(_)
                 | Mode::Bookmark(_)
-                | Mode::Search { .. }
+                | Mode::Search { list: None, .. }
         ) {
             let area = f.area();
             view::backdrop(f.buffer_mut(), area);
@@ -1631,8 +1659,15 @@ impl Reader {
             Mode::Search {
                 query,
                 hits,
+                list: Some(sel),
+                ..
+            } => self.draw_finds(f, query, hits, *sel),
+            Mode::Search {
+                query,
+                hits,
                 current,
                 typing,
+                ..
             } => {
                 let count = match (hits.len(), current) {
                     (0, _) if query.is_empty() => String::new(),
@@ -1708,6 +1743,73 @@ impl Reader {
                 draw_input(f, &title, text);
             }
         }
+    }
+
+    /// The finds, one a row with the words around them, the find lit.
+    fn draw_finds(&self, f: &mut Frame, query: &str, hits: &[(Pos, Pos)], sel: usize) {
+        let area = f.area();
+        let width = area.width.saturating_sub(4).min(80);
+        let height = view::panel_height(hits.len() as u16, 0).min(area.height.saturating_sub(2));
+        let [row] = Split::vertical([Constraint::Length(height)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [popup] = Split::horizontal([Constraint::Length(width)])
+            .flex(Flex::Center)
+            .areas(row);
+        let title = format!("“{query}” — {} found", hits.len());
+        let room = view::draw_panel(f.buffer_mut(), popup, &title, "Enter go · Esc back", 0);
+        // Two columns go to the pointer on the chosen row.
+        let inner = (room.width as usize).saturating_sub(2);
+        let dim = Style::new().fg(ratatui::style::Color::Indexed(245));
+        let lit = Style::new()
+            .fg(ratatui::style::Color::Cyan)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        let items: Vec<ListItem> = hits
+            .iter()
+            .map(|&(from, to)| {
+                let num = format!(" {}", self.layout.page_of(from) + 1);
+                let room = inner.saturating_sub(num.width());
+                let line: Vec<char> = self.doc.lines[from.line].text.chars().collect();
+                // Some words before the find, the find, then what fits after.
+                let lead = 24.min(room / 3);
+                let mut start = from.offset;
+                let mut used = 0;
+                while start > 0 {
+                    let w = unicode_width::UnicodeWidthChar::width(line[start - 1]).unwrap_or(0);
+                    if used + w > lead {
+                        break;
+                    }
+                    used += w;
+                    start -= 1;
+                }
+                let cut = if start > 0 { "…" } else { "" };
+                let before: String = cut.to_string()
+                    + line[start..from.offset]
+                        .iter()
+                        .collect::<String>()
+                        .trim_start();
+                let found: String = line[from.offset..to.offset.min(line.len())]
+                    .iter()
+                    .collect();
+                let after: String = line[to.offset.min(line.len())..].iter().collect();
+                let after = view::fit(&after, room.saturating_sub(before.width() + found.width()));
+                let gap = room.saturating_sub(before.width() + found.width() + after.width());
+                ListItem::new(Line::from(vec![
+                    Span::raw(before),
+                    Span::styled(found, lit),
+                    Span::raw(after),
+                    Span::raw(" ".repeat(gap)),
+                    Span::styled(num, dim),
+                ]))
+            })
+            .collect();
+        let list = List::new(items)
+            .style(view::panel_style())
+            .highlight_symbol(Span::styled("▶ ", view::current_find()))
+            .highlight_spacing(ratatui::widgets::HighlightSpacing::Always)
+            .highlight_style(Style::new().bg(ratatui::style::Color::Indexed(239)));
+        let mut state = ListState::default().with_selected(Some(sel));
+        f.render_stateful_widget(list, room, &mut state);
     }
 
     fn draw_list(
@@ -1896,7 +1998,7 @@ fn draw_search(f: &mut Frame, query: &str, count: &str, typing: bool) {
     let hint = if typing {
         "Enter keep · Esc go back"
     } else {
-        "n next · N previous · / change · Esc close"
+        "n next · N previous · l list · / change · Esc close"
     };
     let room = view::draw_panel(f.buffer_mut(), panel, "Search", hint, 0);
     let w = room.width as usize;
@@ -2040,7 +2142,7 @@ const KEYS: &[(&str, &str)] = &[
     ("", ""),
     ("<  >", "shorter / longer rows"),
     ("a", "page-turn animation on / off"),
-    ("/  ^F", "search (n next, N previous)"),
+    ("/  ^F", "search (n / N next, previous; l list)"),
     ("h", "these keys"),
     ("T", "a tip"),
     ("q  Esc", "close the book"),
@@ -2084,6 +2186,7 @@ const TIPS: &[&str] = &[
     "Click a bookmark's ribbon to change its colour (`c`) or take it out (`d`).",
     "In a spread, `m` bookmarks the page of the pane you press it in.",
     "`/` (or `Ctrl-F`) searches the book; `n` and `N` go to the next and previous find.",
+    "After a search, `l` lists every find with the words around it.",
     "`g` opens the contents, when the book has chapters.",
     "`a` turns the page-turn animation off, or on again.",
 ];
@@ -2545,6 +2648,22 @@ mod tests {
         assert_eq!(r.page(), 1);
         keys(&mut r, &["N"]);
         assert_eq!(r.page(), 3);
+    }
+
+    #[test]
+    fn the_finds_are_listed_and_one_is_gone_to() {
+        let mut r = reader(&["cat", "two", "a cat", "four", "cat"], 1);
+        keys(&mut r, &["/", "c", "a", "t", "enter", "l"]);
+        assert!(matches!(r.mode, Mode::Search { list: Some(0), .. }));
+        keys(&mut r, &["j", "j", "j", "k", "enter"]);
+        let Mode::Search { list, current, .. } = &r.mode else {
+            panic!("search closed");
+        };
+        assert_eq!((*list, *current), (None, Some(1)));
+        assert_eq!(r.page(), 2);
+        // Esc in the list goes back to the search, not out of it.
+        keys(&mut r, &["l", "esc"]);
+        assert!(matches!(r.mode, Mode::Search { list: None, .. }));
     }
 
     #[test]

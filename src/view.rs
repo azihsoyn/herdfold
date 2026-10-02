@@ -331,6 +331,11 @@ fn draw_margin_notes(buf: &mut Buffer, area: Rect, x: u16, w: u16, text_h: u16, 
 /// The find being shown, set apart from the other finds.
 const CURRENT_FIND: Color = Color::Indexed(208);
 
+/// The colour that marks the find being shown, as a style.
+pub fn current_find() -> Style {
+    Style::new().fg(CURRENT_FIND)
+}
+
 /// The reader's own panels (tips, keys, lists, messages) sit on a ground
 /// of their own, so they are never taken for the book's text.
 const PANEL_BG: Color = Color::Indexed(236);
