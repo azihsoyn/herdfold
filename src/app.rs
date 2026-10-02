@@ -756,6 +756,23 @@ impl Reader {
             // A key that is not the search's own closes it and is read as usual.
             return self.handle_key(key, right);
         }
+        // In the side drawer and the lists the arrows go across: left puts
+        // them away (the drawer slides back to its side), right goes where
+        // they point. The page's direction plays no part here.
+        let across = match key {
+            "left" => Some(false),
+            "right" => Some(true),
+            _ => None,
+        };
+        match (self.mode.clone(), across) {
+            (Mode::Contents(sel), Some(true)) => return self.in_contents(sel, Cmd::Enter),
+            (Mode::Shelf(sel), Some(true)) => return self.in_shelf(sel, Cmd::Enter),
+            (Mode::Contents(_) | Mode::Shelf(_), Some(false)) => {
+                self.mode = Mode::Reading;
+                return false;
+            }
+            _ => {}
+        }
         // Bound on the right, the arrows point the way the pages run.
         let key = match (self.rtl, key) {
             (true, "left") => "right",
@@ -2924,6 +2941,36 @@ mod tests {
         assert_eq!(r.layout.page_of(r.entry.marks[0].at), 0);
         keys(&mut r, &["D"]);
         assert_eq!(numbers(&r), (1, Some(2)));
+    }
+
+    #[test]
+    fn arrows_go_across_the_drawer() {
+        let mut r = reader(&["# One", "a", "# Two", "b", "# Three", "c"], 1);
+        r.doc = crate::formats::load(
+            crate::formats::Format::Md,
+            b"# One\n\na\n\n# Two\n\nb\n\n# Three\n\nc\n".to_vec(),
+            "x",
+        )
+        .unwrap();
+        r.laid_for = None;
+        r.fit((20, 4), false);
+        keys(&mut r, &["g", "j", "right"]);
+        assert_eq!(r.mode, Mode::Reading);
+        assert_eq!(
+            r.page(),
+            r.chapter_pages[1],
+            "right went to the chosen chapter"
+        );
+        let here = r.page();
+        keys(&mut r, &["g", "j", "left"]);
+        assert_eq!(
+            (r.mode.clone(), r.page()),
+            (Mode::Reading, here),
+            "left only put it away"
+        );
+        // Bound on the right, the drawer's arrows stay the same.
+        keys(&mut r, &["D", "g", "k", "right"]);
+        assert_eq!(r.page(), r.chapter_pages[0]);
     }
 
     #[test]
