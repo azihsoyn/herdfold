@@ -52,6 +52,9 @@ enum Mode {
         from: Pos,
         to: Pos,
     },
+    /// A highlighter marker (the note at this index), clicked on: what to
+    /// do with it.
+    Marker(usize),
     /// Writing a note on a page or a row, or (`ask`) a question about it
     /// for the agent.
     Writing {
@@ -61,6 +64,8 @@ enum Mode {
         end: Option<Pos>,
         text: String,
         ask: bool,
+        /// Rewriting the text of the note at this index, rather than adding one.
+        rewrite: Option<usize>,
     },
 }
 
@@ -118,6 +123,8 @@ struct Reader {
     ribbon: Ribbon,
     /// Where a mouse drag began, while the button is held.
     dragging: Option<Pos>,
+    /// Colour for the next highlighter marker.
+    marker: Ribbon,
     /// Where this reader's socket is, for an agent to write notes back.
     socket: Option<PathBuf>,
     /// Outcomes of work done off the main loop (asking the agent).
@@ -174,6 +181,7 @@ pub fn run(
         agent,
         ribbon: settings.ribbon.unwrap_or_default(),
         dragging: None,
+        marker: settings.marker.unwrap_or(Ribbon::Yellow),
         socket: None,
         background: mpsc::channel(),
     };
@@ -218,7 +226,8 @@ impl Reader {
         let right = server
             .filter(|_| spread)
             .and_then(|s| RightPane::open(width, &s.path));
-        let mut keys = Vec::new();
+        // Keys, and whether they were pressed in the right-hand pane.
+        let mut keys: Vec<(String, bool)> = Vec::new();
         let mut drawn: Option<(PageView, Mode, Option<Pos>, ratatui::layout::Size)> = None;
         // Hold the first page until the right pane attaches, so the book
         // opens as a spread rather than flashing a single page first.
@@ -285,7 +294,7 @@ impl Reader {
             let wait = if self.turning.is_some() { 16 } else { 30 };
             if event::poll(Duration::from_millis(wait))? {
                 match event::read()? {
-                    Event::Key(k) => keys.extend(view::key_name(k)),
+                    Event::Key(k) => keys.extend(view::key_name(k).map(|k| (k, false))),
                     Event::Mouse(m) => {
                         let kind = match m.kind {
                             MouseEventKind::Down(MouseButton::Left) => Some(MouseKind::Down),
@@ -314,8 +323,8 @@ impl Reader {
             while let Ok(status) = self.background.1.try_recv() {
                 self.say(status);
             }
-            for key in std::mem::take(&mut keys) {
-                if self.handle(&key) {
+            for (key, right) in std::mem::take(&mut keys) {
+                if self.handle_key(&key, right) {
                     self.save();
                     if let Some(s) = server {
                         s.hub.emit(EventData::ReaderClosed);
@@ -327,7 +336,7 @@ impl Reader {
     }
 
     /// Answers one request from the socket; keys it carries join `keys`.
-    fn answer(&mut self, hub: &Hub, msg: Inbound, keys: &mut Vec<String>) {
+    fn answer(&mut self, hub: &Hub, msg: Inbound, keys: &mut Vec<(String, bool)>) {
         let (conn, Request { id, call }) = match msg {
             Inbound::Request(conn, req) => (conn, req),
             Inbound::Closed(conn) => {
@@ -363,8 +372,10 @@ impl Reader {
                 }
             },
             Call::ReaderSendKeys(p) => {
-                // Handled as if typed here, text included while writing a note.
-                keys.extend(p.keys);
+                // Handled as if typed here, text included while writing a note;
+                // from the attached pane, as pressed over the right-hand page.
+                let right = self.attached.is_some_and(|(c, ..)| c == conn);
+                keys.extend(p.keys.into_iter().map(|k| (k, right)));
                 ResponseResult::Ok
             }
             Call::ReaderSendMouse(ReaderMouseParams { kind, col, row }) => match self.attached {
@@ -389,6 +400,7 @@ impl Reader {
                     by: p.by,
                     question: p.question,
                     end: p.end,
+                    color: None,
                 });
                 self.notes_rev += 1;
                 self.say(match p.by {
@@ -509,10 +521,7 @@ impl Reader {
             rows[pad + i].selected = true;
         }
         // Highlighter markers, then the selection being made, over the text.
-        let marker = TextStyle {
-            marker: true,
-            ..TextStyle::default()
-        };
+        let marker = TextStyle::default();
         let selected = TextStyle {
             selected: true,
             ..TextStyle::default()
@@ -521,7 +530,14 @@ impl Reader {
             .entry
             .notes
             .iter()
-            .filter_map(|note| Some((note.at, note.end?, marker)))
+            .filter_map(|note| {
+                let color = note.color.unwrap_or(Ribbon::Yellow);
+                let style = TextStyle {
+                    marker: Some(color),
+                    ..marker
+                };
+                Some((note.at, note.end?, style))
+            })
             .collect();
         if let Mode::Selected { from, to } = self.mode {
             paint.push((from, to, selected));
@@ -610,8 +626,15 @@ impl Reader {
             .map(|(text, _)| text.clone())
     }
 
-    /// Handles one key, by herdr's key name. Returns true to quit.
+    /// Handles one key pressed over the left (or only) page.
+    #[cfg(test)]
     fn handle(&mut self, key: &str) -> bool {
+        self.handle_key(key, false)
+    }
+
+    /// Handles one key, by herdr's key name, pressed in the right-hand pane
+    /// when `right`. Returns true to quit.
+    fn handle_key(&mut self, key: &str, right: bool) -> bool {
         self.toast = None;
         if let Mode::Writing { .. } = self.mode {
             self.write(key);
@@ -625,11 +648,15 @@ impl Reader {
             self.selected_key(key, from, to);
             return false;
         }
+        if let Mode::Marker(i) = self.mode {
+            self.marker_key(key, i);
+            return false;
+        }
         let Some(cmd) = view::cmd_of(key) else {
             return false;
         };
         match self.mode.clone() {
-            Mode::Reading => self.read(cmd),
+            Mode::Reading => self.read(cmd, right),
             Mode::Contents(sel) => self.in_contents(sel, cmd),
             Mode::Shelf(sel) => self.in_shelf(sel, cmd),
             Mode::Select(at) => self.in_select(at, cmd),
@@ -638,7 +665,9 @@ impl Reader {
                 self.mode = Mode::Reading;
                 false
             }
-            Mode::Writing { .. } | Mode::Tip { .. } | Mode::Selected { .. } => false,
+            Mode::Writing { .. } | Mode::Tip { .. } | Mode::Selected { .. } | Mode::Marker(_) => {
+                false
+            }
         }
     }
 
@@ -668,8 +697,14 @@ impl Reader {
         };
     }
 
-    fn read(&mut self, cmd: Cmd) -> bool {
+    fn read(&mut self, cmd: Cmd, right: bool) -> bool {
         let page = self.page();
+        // The page in the pane the key was pressed in.
+        let here = if right && self.spread && page + 1 < self.layout.page_count() {
+            page + 1
+        } else {
+            page
+        };
         match cmd {
             Cmd::Next => {
                 if page + self.step() < self.layout.page_count() {
@@ -681,7 +716,7 @@ impl Reader {
                     self.turn_to(page.saturating_sub(self.step()), Turn::Backward);
                 }
             }
-            Cmd::Mark => self.toggle_mark(page),
+            Cmd::Mark => self.toggle_mark(here),
             Cmd::Animate => self.toggle_animation(),
             Cmd::NoteDisplay => self.cycle_note_display(),
             Cmd::Help => self.mode = Mode::Help,
@@ -691,7 +726,7 @@ impl Reader {
                 let hide = self.keep_settings && settings.tips == Some(false);
                 self.mode = Mode::Tip { index, hide };
             }
-            Cmd::Color => self.recolor_mark(page),
+            Cmd::Color => self.recolor_mark(here),
             // Step from the rows as set, which the pane may hold shorter than the measure.
             Cmd::Wider if self.layout.width < self.measure => {
                 self.say("Rows are already as long as the pane allows".into());
@@ -720,10 +755,13 @@ impl Reader {
             Cmd::NotePage | Cmd::Ask => {
                 self.mode = Mode::Writing {
                     anchor: Anchor::Page,
-                    at: self.layout.start_of(page),
+                    at: self
+                        .layout
+                        .start_of(if cmd == Cmd::Ask { page } else { here }),
                     end: None,
                     text: String::new(),
                     ask: cmd == Cmd::Ask,
+                    rewrite: None,
                 };
             }
             Cmd::Select => match self.open_rows().first() {
@@ -806,6 +844,7 @@ impl Reader {
                     end: None,
                     text: String::new(),
                     ask: cmd == Cmd::Ask,
+                    rewrite: None,
                 };
             }
             Cmd::Quit => return true,
@@ -822,11 +861,22 @@ impl Reader {
             end,
             text,
             ask,
+            rewrite,
         } = &mut self.mode
         else {
             return;
         };
         match key {
+            "enter" if rewrite.is_some() => {
+                let (i, text) = (rewrite.unwrap_or(0), text.trim().to_string());
+                self.mode = Mode::Reading;
+                if let Some(note) = self.entry.notes.get_mut(i) {
+                    note.text = text;
+                    self.notes_rev += 1;
+                    self.say("Note kept".into());
+                    self.save();
+                }
+            }
             "enter" if *ask => {
                 let question = text.trim().to_string();
                 let (anchor, at, end) = (*anchor, *at, *end);
@@ -840,6 +890,7 @@ impl Reader {
                 let (anchor, at, end) = (*anchor, *at, *end);
                 self.mode = Mode::Reading;
                 if !text.is_empty() {
+                    let color = end.map(|_| self.marker);
                     self.entry.add_note(Note {
                         at,
                         anchor,
@@ -847,6 +898,7 @@ impl Reader {
                         by: Author::Reader,
                         question: None,
                         end,
+                        color,
                     });
                     self.notes_rev += 1;
                     self.say("Note kept".into());
@@ -874,7 +926,10 @@ impl Reader {
     /// without a drag lets the choice go.
     fn mouse(&mut self, side: Side, size: (u16, u16), kind: MouseKind, col: u16, row: u16) {
         // Only while reading or choosing; panels in front take no mouse.
-        if !matches!(self.mode, Mode::Reading | Mode::Selected { .. }) {
+        if !matches!(
+            self.mode,
+            Mode::Reading | Mode::Selected { .. } | Mode::Marker(_)
+        ) {
             return;
         }
         let page = match side {
@@ -905,7 +960,11 @@ impl Reader {
             MouseKind::Up => {
                 let start = self.dragging.take();
                 if start == Some(at) {
-                    self.mode = Mode::Reading;
+                    // A click: on a marker, open it; elsewhere, let go.
+                    self.mode = match self.marker_at(at) {
+                        Some(i) => Mode::Marker(i),
+                        None => Mode::Reading,
+                    };
                 }
             }
         }
@@ -978,6 +1037,53 @@ impl Reader {
         out
     }
 
+    /// The highlighter marker covering `at`, if any (the last laid wins).
+    fn marker_at(&self, at: Pos) -> Option<usize> {
+        self.entry
+            .notes
+            .iter()
+            .rposition(|n| n.end.is_some_and(|end| n.at <= at && at < end))
+    }
+
+    /// A key on a clicked marker: c recolours it, n writes its note, d
+    /// removes it.
+    fn marker_key(&mut self, key: &str, i: usize) {
+        let Some(note) = self.entry.notes.get_mut(i) else {
+            self.mode = Mode::Reading;
+            return;
+        };
+        match key {
+            "c" => {
+                let color = note.color.unwrap_or(Ribbon::Yellow).next();
+                note.color = Some(color);
+                self.marker = color;
+                if let Err(e) = self.update_settings(|s| s.marker = Some(color)) {
+                    self.say(format!("Could not save the setting: {e}"));
+                }
+                self.save();
+            }
+            "n" => {
+                self.mode = Mode::Writing {
+                    anchor: Anchor::Range,
+                    at: note.at,
+                    end: note.end,
+                    text: note.text.clone(),
+                    ask: false,
+                    rewrite: Some(i),
+                };
+            }
+            "d" | "delete" | "backspace" => {
+                self.entry.notes.remove(i);
+                self.notes_rev += 1;
+                self.mode = Mode::Reading;
+                self.say("Marker removed".into());
+                self.save();
+            }
+            "esc" | "q" | "enter" | "ctrl+c" => self.mode = Mode::Reading,
+            _ => {}
+        }
+    }
+
     /// A key while text is chosen: what to do with it.
     fn selected_key(&mut self, key: &str, from: Pos, to: Pos) {
         let write = |ask| Mode::Writing {
@@ -986,6 +1092,7 @@ impl Reader {
             end: Some(to),
             text: String::new(),
             ask,
+            rewrite: None,
         };
         match key {
             "m" => {
@@ -996,10 +1103,14 @@ impl Reader {
                     by: Author::Reader,
                     question: None,
                     end: Some(to),
+                    color: Some(self.marker),
                 });
                 self.notes_rev += 1;
                 self.mode = Mode::Reading;
-                self.say("Marked".into());
+                self.say(format!(
+                    "Marked ({}); click it to change or remove",
+                    self.marker.name()
+                ));
                 self.save();
             }
             "n" => self.mode = write(false),
@@ -1173,10 +1284,10 @@ impl Reader {
         out
     }
 
-    /// A bookmark covers what is open: one page, or both pages of a spread.
-    /// A new one takes the colour last chosen.
+    /// A bookmark marks one page: in a spread, the page of the pane `m` was
+    /// pressed in. A new one takes the colour last chosen.
     fn toggle_mark(&mut self, page: usize) {
-        let open = page..page + self.step();
+        let open = page..page + 1;
         let before = self.entry.marks.len();
         let layout = &self.layout;
         self.entry
@@ -1194,10 +1305,10 @@ impl Reader {
         self.save();
     }
 
-    /// Gives the bookmark on the open pages its next colour, which new
-    /// bookmarks then take too.
+    /// Gives the bookmark on `page` its next colour, which new bookmarks
+    /// then take too.
     fn recolor_mark(&mut self, page: usize) {
-        let open = page..page + self.step();
+        let open = page..page + 1;
         let layout = &self.layout;
         let Some(mark) = self
             .entry
@@ -1282,7 +1393,7 @@ impl Reader {
     fn draw_overlay(&self, f: &mut Frame) {
         if !matches!(
             self.mode,
-            Mode::Reading | Mode::Select(_) | Mode::Selected { .. }
+            Mode::Reading | Mode::Select(_) | Mode::Selected { .. } | Mode::Marker(_)
         ) {
             let area = f.area();
             view::backdrop(f.buffer_mut(), area);
@@ -1295,6 +1406,14 @@ impl Reader {
                 draw_selection(f, &quote);
             }
             Mode::Selected { .. } => {}
+            Mode::Marker(i) => {
+                if let Some(note) = self.entry.notes.get(*i)
+                    && let Some(end) = note.end
+                {
+                    let quote = self.text_between(note.at, end).replace('\n', " ");
+                    draw_marker(f, &quote, &note.text, note.color.unwrap_or(Ribbon::Yellow));
+                }
+            }
             Mode::Help => draw_help(f),
             Mode::Tip { index, hide } => draw_tip(f, *index, *hide),
             Mode::Contents(sel) => {
@@ -1480,6 +1599,34 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// What can be done with a clicked marker, in a panel at the foot.
+fn draw_marker(f: &mut Frame, quote: &str, note: &str, color: Ribbon) {
+    let area = f.area();
+    let width = area.width.saturating_sub(4).min(80);
+    let rows = if note.is_empty() { 1 } else { 2 };
+    let height = view::panel_height(rows, 0);
+    let x = area.x + (area.width - width) / 2;
+    let y = area.bottom().saturating_sub(height + 3);
+    let panel = Rect::new(x, y, width, height).intersection(area);
+    let hint = "c colour · n note · d remove · Esc close";
+    let room = view::draw_panel(f.buffer_mut(), panel, "Marker", hint, 0);
+    let swatch = Style::new()
+        .bg(view::ribbon_color(color))
+        .fg(ratatui::style::Color::Black);
+    let w = room.width as usize;
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            view::fit(&format!("“{quote}”"), w.saturating_sub(12)),
+            swatch,
+        ),
+        Span::raw(format!("  {}", color.name())),
+    ])];
+    if !note.is_empty() {
+        lines.push(Line::raw(view::fit(&format!("✎ {note}"), w)));
+    }
+    f.render_widget(Paragraph::new(lines).style(view::panel_style()), room);
+}
+
 /// What can be done with text chosen with the mouse, in a panel at the foot.
 fn draw_selection(f: &mut Frame, quote: &str) {
     let area = f.area();
@@ -1537,6 +1684,8 @@ const KEYS: &[(&str, &str)] = &[
     ("", ""),
     ("m", "bookmark this page (again to remove)"),
     ("c", "colour of the bookmark here"),
+    ("drag", "choose text: marker, note, ask, copy"),
+    ("click", "a marker: colour, note, remove"),
     ("n", "write a note on this page"),
     ("v", "choose a row: Enter to note it, ? to ask"),
     ("l", "bookmarks and notes (Enter go, d remove)"),
@@ -1583,6 +1732,9 @@ const TIPS: &[&str] = &[
     "`N` shows notes as footnotes, in the margin, or as marks only.",
     "`<` and `>` shorten and lengthen the rows. Each book remembers its own.",
     "`l` lists the bookmarks and notes: `Enter` goes there, `d` removes one.",
+    "Drag over text to choose it, then `m` lays a highlighter marker over it.",
+    "Click a marker to change its colour (`c`), write a note on it (`n`), or remove it (`d`).",
+    "In a spread, `m` bookmarks the page of the pane you press it in.",
     "`g` opens the contents, when the book has chapters.",
     "`a` turns the page-turn animation off, or on again.",
 ];
@@ -1708,6 +1860,7 @@ mod tests {
             agent: None,
             ribbon: Ribbon::default(),
             dragging: None,
+            marker: Ribbon::Yellow,
             socket: None,
             background: mpsc::channel(),
         };
@@ -1918,7 +2071,7 @@ mod tests {
             .iter()
             .map(|s| (s.text.as_str(), s.style.marker))
             .collect();
-        assert_eq!(marked, [("hello", true), (" world", false)]);
+        assert_eq!(marked, [("hello", Some(Ribbon::Yellow)), (" world", None)]);
         let labels: Vec<_> = r.shelf().into_iter().map(|s| s.label).collect();
         assert_eq!(labels, ["▌ “hello”"]);
     }
@@ -1943,6 +2096,46 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn each_pane_bookmarks_its_own_page() {
+        let mut r = reader(&["one", "two", "three"], 1);
+        r.spread = true;
+        r.handle_key("m", true);
+        r.handle_key("m", false);
+        let pages: Vec<_> = r
+            .entry
+            .marks
+            .iter()
+            .map(|m| r.layout.page_of(m.at))
+            .collect();
+        assert_eq!(pages, [0, 1]);
+        r.handle_key("c", true);
+        assert_eq!(r.entry.marks[1].color, Ribbon::Yellow);
+        assert_eq!(r.entry.marks[0].color, Ribbon::Red);
+    }
+
+    #[test]
+    fn a_clicked_marker_is_recoloured_noted_and_removed() {
+        let mut r = reader(&["hello world"], 3);
+        drag(&mut r, (0, 0), (4, 0));
+        keys(&mut r, &["m"]);
+        // A click on the marked text opens it.
+        drag(&mut r, (2, 0), (2, 0));
+        assert_eq!(r.mode, Mode::Marker(0));
+        keys(&mut r, &["c"]);
+        assert_eq!(r.entry.notes[0].color, Some(Ribbon::Green));
+        assert_eq!(r.marker, Ribbon::Green);
+        drag(&mut r, (2, 0), (2, 0));
+        keys(&mut r, &["n", "w", "h", "y", "enter"]);
+        assert_eq!(r.entry.notes[0].text, "why");
+        drag(&mut r, (2, 0), (2, 0));
+        keys(&mut r, &["d"]);
+        assert!(r.entry.notes.is_empty());
+        // A click off any marker opens nothing.
+        drag(&mut r, (8, 0), (8, 0));
+        assert_eq!(r.mode, Mode::Reading);
     }
 
     #[test]

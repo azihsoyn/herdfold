@@ -452,8 +452,8 @@ pub fn style_of(t: TextStyle) -> Style {
     if t.code {
         s = s.fg(Color::Yellow);
     }
-    if t.marker {
-        s = s.bg(Color::Yellow).fg(Color::Black);
+    if let Some(c) = t.marker {
+        s = s.bg(ribbon_color(c)).fg(Color::Black);
     }
     if t.selected {
         s = s.add_modifier(Modifier::REVERSED);

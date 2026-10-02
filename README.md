@@ -21,10 +21,11 @@ on from left to right. Elsewhere it shows one page at a time.
 | --- | --- |
 | `Space` / `→` | turn the page |
 | `b` / `←` | turn back |
-| `m` | bookmark what is open (again to remove) |
+| `m` | bookmark the page (in a spread, the page of the pane it is pressed in; again to remove) |
 | `c` | change the colour of the bookmark here |
 | `n` | write a note on the page |
 | drag | choose text with the mouse, then `m` marker · `n` note · `?` ask · `y` copy |
+| click | on a marker: `c` colour · `n` note · `d` remove |
 | `v` | choose a row (`j` / `k`), then `Enter` to write a note on it, or `?` to ask about it |
 | `?` | ask the agent about the open pages |
 | `l` | bookmarks and notes: `Enter` to go, `d` to remove |
@@ -63,7 +64,9 @@ on from left to right. Elsewhere it shows one page at a time.
   the margin is wide enough; `<` makes room), or not at all.
 - **Text is chosen with the mouse**, within the page (or across both pages
   of a spread), and can be marked with a yellow highlighter, noted, asked
-  about, or copied. The book takes the mouse for this, so the terminal's
+  about, or copied. Markers come in the ribbons' six colours (yellow
+  first; new ones take the colour last chosen); clicking one offers to
+  recolour it, write its note, or remove it. The book takes the mouse for this, so the terminal's
   own selection, which in herdr would run across both panes, is not used.
 - **The agent beside the book can be asked.** `?` sends the question, the
   open pages (and the chosen row, from `v`), to a herdr agent in the same

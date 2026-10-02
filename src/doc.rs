@@ -38,9 +38,9 @@ pub struct Style {
     /// Inline code.
     #[serde(default, skip_serializing_if = "is_false")]
     pub code: bool,
-    /// Under a highlighter marker.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub marker: bool,
+    /// Under a highlighter marker, of this colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker: Option<crate::marks::Ribbon>,
     /// In the selection being made.
     #[serde(default, skip_serializing_if = "is_false")]
     pub selected: bool,
@@ -57,7 +57,7 @@ impl Style {
             dim: self.dim || o.dim,
             accent: self.accent || o.accent,
             code: self.code || o.code,
-            marker: self.marker || o.marker,
+            marker: o.marker.or(self.marker),
             selected: self.selected || o.selected,
         }
     }
