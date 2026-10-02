@@ -60,6 +60,8 @@ impl Pictures {
         };
         let (tx, rx) = mpsc::channel::<Vec<Placed>>();
         let worker = thread::spawn(move || {
+            // The cell's size, to send no more pixels than the cells show.
+            let cell = herdr::cell_size(&pane).unwrap_or((10, 20));
             // Layers set and not yet taken out, each cleared by name: a
             // clear without one does not reach them. The first clear sweeps
             // every layer herdr allows, for what a reader that did not close
@@ -78,17 +80,11 @@ impl Pictures {
                 }
                 clear(&mut set);
                 for p in &wanted {
-                    let Ok(bytes) = std::fs::read(&p.path) else {
+                    let Some((format, data, size)) = prepare(p, cell) else {
                         continue;
                     };
-                    let placed = herdr::set_picture(
-                        &pane,
-                        &layer(set),
-                        &base64(&bytes),
-                        p.size,
-                        p.at,
-                        p.cells,
-                    );
+                    let placed =
+                        herdr::set_picture(&pane, &layer(set), format, &data, size, p.at, p.cells);
                     if placed.is_ok() {
                         set += 1;
                     }
@@ -129,6 +125,37 @@ impl Pictures {
     }
 }
 
+/// A picture ready for herdr: its format, its data in base64, and its size
+/// in pixels. A PNG that is no bigger than its cells show goes as it is;
+/// anything else is decoded, scaled down to the cells, and sent as pixels.
+fn prepare(p: &Placed, (cw, ch): (u32, u32)) -> Option<(&'static str, String, (u32, u32))> {
+    let bytes = std::fs::read(&p.path).ok()?;
+    let fits = (p.cells.0 as u32 * cw, p.cells.1 as u32 * ch);
+    let png = bytes.starts_with(b"\x89PNG\r\n\x1a\n");
+    if png && p.size.0 <= fits.0 && p.size.1 <= fits.1 {
+        return Some(("png", base64(&bytes), p.size));
+    }
+    let picture = image::load_from_memory(&bytes).ok()?;
+    let picture = if picture.width() > fits.0 || picture.height() > fits.1 {
+        picture.resize(fits.0, fits.1, image::imageops::FilterType::Triangle)
+    } else {
+        picture
+    };
+    let rgba = picture.to_rgba8();
+    let size = rgba.dimensions();
+    Some(("rgba", base64(rgba.as_raw()), size))
+}
+
+/// Where pictures taken out of books are kept:
+/// `$XDG_CACHE_HOME/herdfold/pictures` (default `~/.cache/herdfold/pictures`).
+pub fn cache_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
+    Some(base.join(crate::NAME).join("pictures"))
+}
+
 impl Drop for Pictures {
     /// Waits for the worker to take the pictures out before the reader goes.
     fn drop(&mut self) {
@@ -158,4 +185,45 @@ pub fn base64(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(name: &str, format: image::ImageFormat, w: u32, h: u32) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("herdfold-{}-{name}", std::process::id()));
+        image::RgbImage::new(w, h)
+            .save_with_format(&path, format)
+            .unwrap();
+        path
+    }
+
+    fn placed(path: PathBuf, size: (u32, u32), cells: (u16, u16)) -> Placed {
+        Placed {
+            path,
+            size,
+            at: (0, 0),
+            cells,
+        }
+    }
+
+    #[test]
+    fn a_small_png_goes_as_it_is() {
+        let path = file("small.png", image::ImageFormat::Png, 20, 10);
+        let (format, _, size) = prepare(&placed(path.clone(), (20, 10), (4, 1)), (10, 20)).unwrap();
+        assert_eq!((format, size), ("png", (20, 10)));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_jpeg_is_decoded_and_scaled_to_its_cells() {
+        let path = file("big.jpg", image::ImageFormat::Jpeg, 800, 400);
+        // 10 x 4 cells of 10 x 20 pixels show at most 100 x 80.
+        let (format, data, size) =
+            prepare(&placed(path.clone(), (800, 400), (10, 4)), (10, 20)).unwrap();
+        assert_eq!((format, size), ("rgba", (100, 50)));
+        assert_eq!(data.len(), (100 * 50 * 4usize).div_ceil(3) * 4);
+        let _ = std::fs::remove_file(path);
+    }
 }

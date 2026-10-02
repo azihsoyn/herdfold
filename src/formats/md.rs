@@ -173,8 +173,8 @@ impl Renderer {
                 // description is gathered as its text.
                 let local = !dest_url.contains("://");
                 let found = match &self.dir {
-                    Some(dir) if local => Picture::png(dir.join(dest_url.as_ref())),
-                    None if local => Picture::png(dest_url.as_ref().into()),
+                    Some(dir) if local => Picture::open(dir.join(dest_url.as_ref())),
+                    None if local => Picture::open(dest_url.as_ref().into()),
                     _ => None,
                 };
                 if let Some(picture) = found {

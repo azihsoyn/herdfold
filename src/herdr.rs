@@ -164,13 +164,15 @@ pub fn cell_size(pane: &str) -> Option<(u32, u32)> {
     (w > 0 && h > 0).then_some((w, h))
 }
 
-/// Sets a PNG of `width` x `height` pixels in `pane` as layer `layer`, over
-/// `cols` x `rows` cells from (`col`, `row`).
+/// Sets a picture of `width` x `height` pixels in `pane` as layer `layer`,
+/// over `cols` x `rows` cells from (`col`, `row`). `format` is herdr's: "png"
+/// for a PNG file's bytes, "rgba" for raw pixels.
 #[allow(clippy::too_many_arguments)]
 pub fn set_picture(
     pane: &str,
     layer: &str,
-    png_base64: &str,
+    format: &str,
+    data_base64: &str,
     (width, height): (u32, u32),
     (col, row): (u16, u16),
     (cols, rows): (u16, u16),
@@ -180,10 +182,10 @@ pub fn set_picture(
         serde_json::json!({
             "pane_id": pane,
             "layer_id": layer,
-            "format": "png",
+            "format": format,
             "image_width": width,
             "image_height": height,
-            "data_base64": png_base64,
+            "data_base64": data_base64,
             "placement": {
                 "grid_cols": cols, "grid_rows": rows,
                 "viewport_col": col, "viewport_row": row,

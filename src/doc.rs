@@ -101,7 +101,7 @@ pub struct Line {
     pub image: Option<Picture>,
 }
 
-/// A picture to set in the book: a PNG file and its size in pixels.
+/// A picture to set in the book: an image file and its size in pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Picture {
     pub path: std::path::PathBuf,
@@ -110,20 +110,16 @@ pub struct Picture {
 }
 
 impl Picture {
-    /// The picture at `path`, if it is a PNG that can be read.
-    pub fn png(path: std::path::PathBuf) -> Option<Self> {
-        use std::io::Read;
-        let mut head = [0u8; 24];
-        std::fs::File::open(&path)
+    /// The picture at `path`, if it is one herdfold can read (PNG, JPEG,
+    /// GIF, WebP, BMP). Only the header is read here, for the size; the
+    /// picture itself is decoded when its page is shown.
+    pub fn open(path: std::path::PathBuf) -> Option<Self> {
+        let (width, height) = image::ImageReader::open(&path)
             .ok()?
-            .read_exact(&mut head)
+            .with_guessed_format()
+            .ok()?
+            .into_dimensions()
             .ok()?;
-        // The signature, then the IHDR chunk with width and height.
-        if &head[..8] != b"\x89PNG\r\n\x1a\n" || &head[12..16] != b"IHDR" {
-            return None;
-        }
-        let width = u32::from_be_bytes(head[16..20].try_into().ok()?);
-        let height = u32::from_be_bytes(head[20..24].try_into().ok()?);
         (width > 0 && height > 0).then_some(Self {
             path,
             width,

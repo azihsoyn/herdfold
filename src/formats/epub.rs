@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use zip::ZipArchive;
 
 use super::xml::{self, Element, Node};
-use crate::doc::{Chapter, Document, Kind, Line};
+use crate::doc::{Chapter, Document, Kind, Line, Picture};
 
 type Zip = ZipArchive<Cursor<Vec<u8>>>;
 
@@ -20,6 +20,12 @@ struct Item {
 }
 
 pub fn load(bytes: Vec<u8>) -> Result<Document> {
+    load_into(bytes, crate::pictures::cache_dir())
+}
+
+/// Reads an EPUB, keeping the pictures it shows in `cache` (none: their
+/// descriptions are shown instead).
+fn load_into(bytes: Vec<u8>, cache: Option<std::path::PathBuf>) -> Result<Document> {
     let mut zip = ZipArchive::new(Cursor::new(bytes)).context("not an EPUB (not a zip archive)")?;
     let container = xml::parse(&read(&mut zip, "META-INF/container.xml")?);
     let opf_path = container
@@ -71,10 +77,21 @@ pub fn load(bytes: Vec<u8>) -> Result<Document> {
         html.node(page.find("body").unwrap_or(&page));
         html.flush(false);
         html.blank();
+        let pictures = std::mem::take(&mut html.pictures);
         for (id, line) in html.ids {
             anchors.insert((item.href.clone(), id), line);
         }
         headings.extend(html.headings);
+        // Pictures are taken out of the book into the cache, to be set from
+        // there like any other picture file.
+        for (line, src) in pictures {
+            let path = resolve(dir_of(&item.href), &src);
+            let picture = cache
+                .as_deref()
+                .and_then(|cache| keep(cache, &read_bytes(&mut zip, &path).ok()?, &path))
+                .and_then(Picture::open);
+            doc.lines[line].image = picture;
+        }
     }
 
     let toc = items
@@ -117,12 +134,31 @@ pub fn load(bytes: Vec<u8>) -> Result<Document> {
 }
 
 fn read(zip: &mut Zip, name: &str) -> Result<String> {
+    Ok(String::from_utf8_lossy(&read_bytes(zip, name)?).into_owned())
+}
+
+fn read_bytes(zip: &mut Zip, name: &str) -> Result<Vec<u8>> {
     let mut f = zip
         .by_name(name)
         .with_context(|| format!("{name} is missing from the EPUB"))?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf)?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    Ok(buf)
+}
+
+/// Writes a picture's bytes into `cache` under a name drawn from them (so
+/// the same picture is kept once), keeping the extension of `name`.
+fn keep(cache: &std::path::Path, bytes: &[u8], name: &str) -> Option<std::path::PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("img");
+    let path = cache.join(format!("{:016x}.{ext}", h.finish()));
+    if !path.exists() {
+        std::fs::create_dir_all(cache).ok()?;
+        std::fs::write(&path, bytes).ok()?;
+    }
+    Some(path)
 }
 
 fn dir_of(path: &str) -> &str {
@@ -288,6 +324,8 @@ struct Html<'a> {
     lists: Vec<Option<usize>>,
     ids: Vec<(String, usize)>,
     headings: Vec<Chapter>,
+    /// Lines holding pictures, and where each picture's file is.
+    pictures: Vec<(usize, String)>,
 }
 
 impl<'a> Html<'a> {
@@ -300,6 +338,7 @@ impl<'a> Html<'a> {
             lists: Vec::new(),
             ids: Vec::new(),
             headings: Vec::new(),
+            pictures: Vec::new(),
         }
     }
 
@@ -322,6 +361,17 @@ impl<'a> Html<'a> {
                 } else {
                     format!("[image: {alt}]")
                 };
+                // A picture in the book gets a line of its own; its file is
+                // found once the page is read (see `load`).
+                let src = e.attr("src").or_else(|| e.attr("href"));
+                if let Some(src) = src.filter(|s| !s.contains(':')) {
+                    self.flush(false);
+                    self.pictures.push((self.lines.len(), src.to_string()));
+                    let mut line = Line::new(s, Kind::Image);
+                    line.style.dim = true;
+                    self.lines.push(line);
+                    return;
+                }
                 return self.text(&s);
             }
             "td" | "th" => self.text(" "),
@@ -455,6 +505,71 @@ mod tests {
         assert_eq!(
             flatten("<ol><li>x</li><li>y<ul><li>z</li></ul></li></ol>"),
             ["1. x", "2. y", "  • z", ""]
+        );
+    }
+
+    fn picture(format: image::ImageFormat, w: u32, h: u32) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(w, h)
+            .write_to(&mut out, format)
+            .unwrap();
+        out.into_inner()
+    }
+
+    /// An EPUB whose one page shows a PNG and a JPEG.
+    fn pictured_epub() -> Vec<u8> {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default();
+        let mut put = |name: &str, bytes: &[u8]| {
+            zip.start_file(name, opts).unwrap();
+            zip.write_all(bytes).unwrap();
+        };
+        put(
+            "META-INF/container.xml",
+            br#"<container><rootfiles><rootfile full-path="OEBPS/book.opf"/></rootfiles></container>"#,
+        );
+        put(
+            "OEBPS/book.opf",
+            br#"<package><manifest><item id="p" href="text/p.xhtml"/></manifest><spine><itemref idref="p"/></spine></package>"#,
+        );
+        put(
+            "OEBPS/text/p.xhtml",
+            br#"<html><body><p>before</p><img src="../img/a.png" alt="A"/><p>between<img src="../img/b.jpg"/></p></body></html>"#,
+        );
+        put("OEBPS/img/a.png", &picture(image::ImageFormat::Png, 40, 20));
+        put(
+            "OEBPS/img/b.jpg",
+            &picture(image::ImageFormat::Jpeg, 30, 60),
+        );
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn pictures_are_taken_out_of_the_book() {
+        let cache = std::env::temp_dir().join(format!("herdfold-test-{}", std::process::id()));
+        let doc = load_into(pictured_epub(), Some(cache.clone())).unwrap();
+        let pictures: Vec<_> = doc
+            .lines
+            .iter()
+            .filter(|l| l.kind == Kind::Image)
+            .map(|l| {
+                let p = l.image.as_ref().expect("a picture");
+                assert!(p.path.starts_with(&cache) && p.path.exists());
+                (l.text.as_str(), p.width, p.height)
+            })
+            .collect();
+        assert_eq!(pictures, [("[image: A]", 40, 20), ("[image]", 30, 60)]);
+        let _ = std::fs::remove_dir_all(cache);
+    }
+
+    #[test]
+    fn without_a_cache_pictures_are_described() {
+        let doc = load_into(pictured_epub(), None).unwrap();
+        let line = doc.lines.iter().find(|l| l.kind == Kind::Image).unwrap();
+        assert_eq!(
+            (line.text.as_str(), line.image.is_none()),
+            ("[image: A]", true)
         );
     }
 
