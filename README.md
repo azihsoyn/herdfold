@@ -31,6 +31,7 @@ on from left to right. Elsewhere it shows one page at a time.
 | `l` | bookmarks and notes: `Enter` to go, `d` to remove |
 | `N` | notes as footnotes / in the margin / as marks only (remembered) |
 | `g` | contents |
+| `/` or `Ctrl-F` | search as you type; then `n` / `N` next and previous |
 | `<` / `>` | shorter / longer rows (narrower / wider margins) |
 | `a` | page-turn animation on / off (remembered) |
 | `h` | list the keys |

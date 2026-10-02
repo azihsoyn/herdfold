@@ -57,6 +57,15 @@ enum Mode {
     Marker(usize),
     /// A bookmark (the one at this index), its ribbon clicked on.
     Bookmark(usize),
+    /// Searching: the words sought, where they were found, which find is
+    /// shown, and whether the words are still being typed (and from where,
+    /// to go back to if the search is dropped).
+    Search {
+        query: String,
+        hits: Vec<(Pos, Pos)>,
+        current: Option<usize>,
+        typing: Option<Pos>,
+    },
     /// Writing a note on a page or a row, or (`ask`) a question about it
     /// for the agent.
     Writing {
@@ -544,6 +553,25 @@ impl Reader {
         if let Mode::Selected { from, to } = self.mode {
             paint.push((from, to, selected));
         }
+        if let Mode::Search { hits, current, .. } = &self.mode {
+            let found = TextStyle {
+                found: true,
+                ..TextStyle::default()
+            };
+            let shown = TextStyle {
+                selected: true,
+                ..found
+            };
+            let (first, last) = (self.layout.start_of(n), self.layout.start_of(n + 1));
+            for (i, &(from, to)) in hits.iter().enumerate() {
+                // Only the finds that can touch this page.
+                if to < first || (n + 1 < self.layout.page_count() && from > last) {
+                    continue;
+                }
+                let style = if Some(i) == *current { shown } else { found };
+                paint.push((from, to, style));
+            }
+        }
         for (i, r) in self.layout.page(n).iter().enumerate() {
             for &(from, to, style) in &paint {
                 paint_row(&mut rows[pad + i], r, from, to, style);
@@ -658,6 +686,15 @@ impl Reader {
             self.bookmark_key(key, i);
             return false;
         }
+        if let Mode::Search { .. } = self.mode
+            && !self.search_key(key)
+        {
+            // A key that is not the search's own closes it and is read as usual.
+            return self.handle_key(key, right);
+        }
+        if let Mode::Search { .. } = self.mode {
+            return false;
+        }
         let Some(cmd) = view::cmd_of(key) else {
             return false;
         };
@@ -675,7 +712,8 @@ impl Reader {
             | Mode::Tip { .. }
             | Mode::Selected { .. }
             | Mode::Marker(_)
-            | Mode::Bookmark(_) => false,
+            | Mode::Bookmark(_)
+            | Mode::Search { .. } => false,
         }
     }
 
@@ -728,6 +766,14 @@ impl Reader {
             Cmd::Animate => self.toggle_animation(),
             Cmd::NoteDisplay => self.cycle_note_display(),
             Cmd::Help => self.mode = Mode::Help,
+            Cmd::Search => {
+                self.mode = Mode::Search {
+                    query: String::new(),
+                    hits: Vec::new(),
+                    current: None,
+                    typing: Some(self.entry.at),
+                };
+            }
             Cmd::Tip => {
                 let settings = marks::settings();
                 let index = settings.next_tip.unwrap_or(0) % TIPS.len();
@@ -1109,6 +1155,98 @@ impl Reader {
         }
     }
 
+    /// A key while searching. Returns false for a key that is not the
+    /// search's own, having closed the search so the key can be read as usual.
+    fn search_key(&mut self, key: &str) -> bool {
+        let Mode::Search {
+            query,
+            hits,
+            current,
+            typing,
+        } = &mut self.mode
+        else {
+            return false;
+        };
+        if let Some(origin) = *typing {
+            match key {
+                "enter" => *typing = None,
+                "esc" | "ctrl+c" => {
+                    // Dropped while typing: back to where the search began.
+                    self.entry.at = origin;
+                    self.mode = Mode::Reading;
+                    self.save();
+                }
+                "backspace" | "space" => {
+                    if key == "space" {
+                        query.push(' ');
+                    } else {
+                        query.pop();
+                    }
+                    self.find(origin);
+                }
+                k if k.chars().count() == 1 => {
+                    query.push_str(k);
+                    self.find(origin);
+                }
+                _ => {}
+            }
+            return true;
+        }
+        let count = hits.len();
+        let step = |by: isize| match (*current, count) {
+            (_, 0) => None,
+            (None, _) => Some(0),
+            (Some(i), n) => Some((i as isize + by).rem_euclid(n as isize) as usize),
+        };
+        let next = match key {
+            "n" | "enter" | "down" | "ctrl+n" => step(1),
+            "N" | "up" | "ctrl+p" => step(-1),
+            "/" | "ctrl+f" => {
+                *typing = Some(self.entry.at);
+                return true;
+            }
+            "esc" | "q" => {
+                self.mode = Mode::Reading;
+                return true;
+            }
+            _ => {
+                self.mode = Mode::Reading;
+                return false;
+            }
+        };
+        if let Some(i) = next {
+            *current = Some(i);
+            let page = self.layout.page_of(hits[i].0);
+            self.go(page);
+        }
+        true
+    }
+
+    /// Finds the words being searched for, and shows the first find at or
+    /// after `origin`, else the first in the book.
+    fn find(&mut self, origin: Pos) {
+        let Mode::Search {
+            query,
+            hits,
+            current,
+            ..
+        } = &mut self.mode
+        else {
+            return;
+        };
+        *hits = search(&self.doc, query);
+        *current = hits
+            .iter()
+            .position(|(from, _)| *from >= origin)
+            .or((!hits.is_empty()).then_some(0));
+        let to = match *current {
+            Some(i) => hits[i].0,
+            None => origin,
+        };
+        let page = self.layout.page_of(to);
+        self.go(page);
+    }
+
     /// The highlighter marker covering `at`, if any (the last laid wins).
     fn marker_at(&self, at: Pos) -> Option<usize> {
         self.entry
@@ -1472,6 +1610,7 @@ impl Reader {
                 | Mode::Selected { .. }
                 | Mode::Marker(_)
                 | Mode::Bookmark(_)
+                | Mode::Search { .. }
         ) {
             let area = f.area();
             view::backdrop(f.buffer_mut(), area);
@@ -1484,6 +1623,20 @@ impl Reader {
                 draw_selection(f, &quote);
             }
             Mode::Selected { .. } => {}
+            Mode::Search {
+                query,
+                hits,
+                current,
+                typing,
+            } => {
+                let count = match (hits.len(), current) {
+                    (0, _) if query.is_empty() => String::new(),
+                    (0, _) => "no matches".to_string(),
+                    (n, Some(i)) => format!("{} of {n}", i + 1),
+                    (n, None) => format!("{n} found"),
+                };
+                draw_search(f, query, &count, typing.is_some());
+            }
             Mode::Bookmark(i) => {
                 if let Some(m) = self.entry.marks.get(*i) {
                     let page = self.layout.page_of(m.at) + 1;
@@ -1683,6 +1836,83 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// Every place `query` occurs in the book, as (start, end). Letter case is
+/// ignored unless the query has a capital (as less and vim do).
+fn search(doc: &Document, query: &str) -> Vec<(Pos, Pos)> {
+    const MOST: usize = 10_000;
+    let fold = !query.chars().any(char::is_uppercase);
+    let norm = |c: char| {
+        if fold {
+            c.to_lowercase().next().unwrap_or(c)
+        } else {
+            c
+        }
+    };
+    let q: Vec<char> = query.chars().map(norm).collect();
+    let mut hits = Vec::new();
+    if q.is_empty() {
+        return hits;
+    }
+    for (line, l) in doc.lines.iter().enumerate() {
+        if l.kind == Kind::Rule {
+            continue;
+        }
+        let text: Vec<char> = l.text.chars().map(norm).collect();
+        let mut i = 0;
+        while i + q.len() <= text.len() {
+            if text[i..i + q.len()] == q[..] {
+                hits.push((
+                    Pos { line, offset: i },
+                    Pos {
+                        line,
+                        offset: i + q.len(),
+                    },
+                ));
+                if hits.len() == MOST {
+                    return hits;
+                }
+                i += q.len();
+            } else {
+                i += 1;
+            }
+        }
+    }
+    hits
+}
+
+/// The search box, at the foot of the pane.
+fn draw_search(f: &mut Frame, query: &str, count: &str, typing: bool) {
+    let area = f.area();
+    let width = area.width.saturating_sub(4).min(80);
+    let height = view::panel_height(1, 0);
+    let x = area.x + (area.width - width) / 2;
+    let y = area.bottom().saturating_sub(height + 3);
+    let panel = Rect::new(x, y, width, height).intersection(area);
+    let hint = if typing {
+        "Enter keep · Esc go back"
+    } else {
+        "n next · N previous · / change · Esc close"
+    };
+    let room = view::draw_panel(f.buffer_mut(), panel, "Search", hint, 0);
+    let w = room.width as usize;
+    let mut shown = format!("/{query}");
+    while shown.width() + count.width() + 3 > w && shown.chars().count() > 1 {
+        shown.remove(1);
+    }
+    let cursor = if typing { "▏" } else { "" };
+    let gap = w.saturating_sub(shown.width() + cursor.width() + count.width());
+    let line = Line::from(vec![
+        Span::raw(shown),
+        Span::raw(cursor),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(
+            count.to_string(),
+            Style::new().fg(ratatui::style::Color::Indexed(245)),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(line).style(view::panel_style()), room);
+}
+
 /// What can be done with a clicked ribbon, in a panel at the foot.
 fn draw_bookmark(f: &mut Frame, page: usize, first: &str, color: Ribbon) {
     let area = f.area();
@@ -1805,6 +2035,7 @@ const KEYS: &[(&str, &str)] = &[
     ("", ""),
     ("<  >", "shorter / longer rows"),
     ("a", "page-turn animation on / off"),
+    ("/  ^F", "search (n next, N previous)"),
     ("h", "these keys"),
     ("T", "a tip"),
     ("q  Esc", "close the book"),
@@ -1847,6 +2078,7 @@ const TIPS: &[&str] = &[
     "Click a marker to change its colour (`c`), write a note on it (`n`), or remove it (`d`).",
     "Click a bookmark's ribbon to change its colour (`c`) or take it out (`d`).",
     "In a spread, `m` bookmarks the page of the pane you press it in.",
+    "`/` (or `Ctrl-F`) searches the book; `n` and `N` go to the next and previous find.",
     "`g` opens the contents, when the book has chapters.",
     "`a` turns the page-turn animation off, or on again.",
 ];
@@ -2277,6 +2509,50 @@ mod tests {
         // Off the ribbon, a press is text.
         r.mouse(Side::Single, size, MouseKind::Down, 33, 2);
         assert!(matches!(r.mode, Mode::Selected { .. }));
+    }
+
+    #[test]
+    fn search_ignores_case_unless_asked_not_to() {
+        let mut r = reader(&["Apple apple", "APPLE"], 3);
+        r.doc.lines.push(DocLine::new("━", Kind::Rule));
+        assert_eq!(search(&r.doc, "apple").len(), 3);
+        assert_eq!(search(&r.doc, "Apple").len(), 1);
+        assert!(search(&r.doc, "").is_empty());
+    }
+
+    #[test]
+    fn search_finds_as_you_type_and_steps_through() {
+        let mut r = reader(&["one", "two cat", "three", "cat four", "five"], 1);
+        keys(&mut r, &["/", "c", "a", "t"]);
+        assert_eq!(r.page(), 1);
+        let Mode::Search { hits, current, .. } = &r.mode else {
+            panic!("not searching");
+        };
+        assert_eq!((hits.len(), *current), (2, Some(0)));
+        // The find on the open page is painted.
+        assert!(r.views().0.rows[0].spans.iter().any(|s| s.style.found));
+        keys(&mut r, &["enter", "n"]);
+        assert_eq!(r.page(), 3);
+        keys(&mut r, &["n"]);
+        assert_eq!(r.page(), 1);
+        keys(&mut r, &["N"]);
+        assert_eq!(r.page(), 3);
+    }
+
+    #[test]
+    fn dropping_a_search_while_typing_goes_back() {
+        let mut r = reader(&["one", "two", "three cat"], 1);
+        keys(&mut r, &["/", "c", "a", "t"]);
+        assert_eq!(r.page(), 2);
+        keys(&mut r, &["esc"]);
+        assert_eq!((r.page(), r.mode.clone()), (0, Mode::Reading));
+    }
+
+    #[test]
+    fn another_key_ends_a_search_and_does_its_own_work() {
+        let mut r = reader(&["cat", "two", "three"], 1);
+        keys(&mut r, &["/", "c", "enter", "space"]);
+        assert_eq!((r.page(), r.mode.clone()), (1, Mode::Reading));
     }
 
     #[test]

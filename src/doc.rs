@@ -44,6 +44,9 @@ pub struct Style {
     /// In the selection being made.
     #[serde(default, skip_serializing_if = "is_false")]
     pub selected: bool,
+    /// A match for the search.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub found: bool,
 }
 
 impl Style {
@@ -59,6 +62,7 @@ impl Style {
             code: self.code || o.code,
             marker: o.marker.or(self.marker),
             selected: self.selected || o.selected,
+            found: self.found || o.found,
         }
     }
 }

@@ -135,6 +135,8 @@ pub enum Cmd {
     Help,
     /// A tip on using the reader.
     Tip,
+    /// Search the book.
+    Search,
     /// Remove the bookmark or note chosen in the list.
     Delete,
 }
@@ -190,6 +192,8 @@ pub fn cmd_of(key: &str) -> Option<Cmd> {
         "c" => Cmd::Color,
         "h" | "H" => Cmd::Help,
         "T" => Cmd::Tip,
+        // Cmd-F belongs to the terminal and never arrives; Ctrl-F does.
+        "/" | "ctrl+f" => Cmd::Search,
         "d" => Cmd::Delete,
         _ => return None,
     })
@@ -467,6 +471,9 @@ pub fn style_of(t: TextStyle) -> Style {
     }
     if let Some(c) = t.marker {
         s = s.bg(ribbon_color(c)).fg(Color::Black);
+    }
+    if t.found {
+        s = s.bg(Color::Cyan).fg(Color::Black);
     }
     if t.selected {
         s = s.add_modifier(Modifier::REVERSED);
