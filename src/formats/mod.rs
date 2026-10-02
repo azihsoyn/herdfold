@@ -24,10 +24,17 @@ pub enum Format {
     Epub,
 }
 
-pub fn load(format: Format, bytes: Vec<u8>, name: &str) -> Result<Document> {
+/// Reads `bytes` as `format`. Pictures a Markdown file points at are looked
+/// for relative to `dir`, the file's directory (none for stdin).
+pub fn load(
+    format: Format,
+    bytes: Vec<u8>,
+    name: &str,
+    dir: Option<&std::path::Path>,
+) -> Result<Document> {
     let mut doc = match format {
         Format::Text => text::load(&String::from_utf8_lossy(&bytes)),
-        Format::Md => md::load(&String::from_utf8_lossy(&bytes)),
+        Format::Md => md::load_in(&String::from_utf8_lossy(&bytes), dir),
         Format::Diff => diff::load(&String::from_utf8_lossy(&bytes)),
         Format::Epub => epub::load(bytes)?,
     };

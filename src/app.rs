@@ -23,6 +23,7 @@ use crate::herdr::{self, RightPane};
 use crate::keys::{self, Keymap};
 use crate::layout::{Layout, Pos};
 use crate::marks::{self, Anchor, Author, Direction, Entry, Mark, Note, NoteDisplay, Ribbon};
+use crate::pictures::Pictures;
 use crate::server::{ConnId, Hub, Inbound, Server};
 use crate::turn::{Turn, Turning};
 use crate::view::{self, Cmd, MarginNote, PageRow, PageView, Side};
@@ -143,6 +144,8 @@ struct Reader {
     keymap: Keymap,
     /// The pages run right to left: the right page comes first.
     rtl: bool,
+    /// A character cell's size in pixels, where herdr can set pictures.
+    cell: Option<(u32, u32)>,
     /// Chapters folded shut in the contents, their sections hidden.
     folded: std::collections::BTreeSet<usize>,
     /// Where this reader's socket is, for an agent to write notes back.
@@ -170,6 +173,7 @@ struct LaidFor {
     spread: bool,
     notes: NoteDisplay,
     notes_rev: u64,
+    cell: Option<(u32, u32)>,
 }
 
 /// Opens the book. With `spread`, and inside herdr, the right-hand page goes
@@ -199,6 +203,9 @@ pub fn run(
         book,
         entry,
         rtl,
+        cell: std::env::var("HERDR_PANE_ID")
+            .ok()
+            .and_then(|pane| herdr::cell_size(&pane)),
         folded: Default::default(),
         chapter_pages: Vec::new(),
         spread: false,
@@ -275,6 +282,7 @@ impl Reader {
         // Keys, and whether they were pressed in the right-hand pane.
         let mut keys: Vec<(String, bool)> = Vec::new();
         let mut drawn: Option<Drawn> = None;
+        let mut pictures = Pictures::new();
         // Hold the first page until the right pane attaches, so the book
         // opens as a spread rather than flashing a single page first.
         if let (Some(s), Some(_)) = (server, &right) {
@@ -301,6 +309,7 @@ impl Reader {
             );
 
             let (left, right) = self.views();
+            let left_now = left.clone();
             // Draw only what changed. Writing to the terminal when nothing
             // has (even an empty frame) clears a selection made with the
             // mouse, so a quiet page is left alone.
@@ -330,6 +339,16 @@ impl Reader {
                 // The last frame drawn was mid-turn; draw the page settled.
                 drawn = None;
             }
+            // Pictures only on a settled page with nothing open over it.
+            let settled = self.turning.is_none()
+                && matches!(
+                    self.mode,
+                    Mode::Reading | Mode::Select(_) | Mode::Selected { .. }
+                );
+            pictures.show(
+                Rect::new(0, 0, area.width, area.height),
+                settled.then_some(&left_now),
+            );
             let pages = (left, right);
             if let Some(s) = server
                 && (self.unsent_turn.is_some() || self.shown.as_ref() != Some(&pages))
@@ -473,6 +492,7 @@ impl Reader {
             spread,
             notes: self.note_display,
             notes_rev: self.notes_rev,
+            cell: self.cell,
         };
         if self.laid_for == Some(want) {
             return;
@@ -486,9 +506,9 @@ impl Reader {
                 .filter(|n| !n.text.is_empty())
                 .map(|n| (n.at, footnote_rows(n, width).len()))
                 .collect();
-            Layout::with_footnotes(&self.doc, width, height, &footnotes)
+            Layout::with_footnotes(&self.doc, width, height, &footnotes, self.cell)
         } else {
-            Layout::new(&self.doc, width, height)
+            Layout::with_footnotes(&self.doc, width, height, &[], self.cell)
         };
         self.spread = spread;
         self.chapter_pages = self
@@ -566,6 +586,7 @@ impl Reader {
             width: self.layout.width,
             status: None,
             margin_notes: Vec::new(),
+            pictures: Vec::new(),
         }
     }
 
@@ -701,6 +722,26 @@ impl Reader {
             }
             NoteDisplay::Footnotes | NoteDisplay::Marks => {}
         }
+        // Pictures, centred in the column over the rows left for them.
+        let pictures = self
+            .layout
+            .page(n)
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                let (cols, rows) = r.picture?;
+                let picture = self.doc.lines[r.pos.line].image.as_ref()?;
+                Some(crate::pictures::PagePicture {
+                    row: pad + i,
+                    col: self.layout.width.saturating_sub(cols as usize) / 2,
+                    cols,
+                    rows,
+                    path: picture.path.clone(),
+                    width: picture.width,
+                    height: picture.height,
+                })
+            })
+            .collect();
         PageView {
             side,
             head,
@@ -722,6 +763,7 @@ impl Reader {
             // The snackbar sits at the bottom right of the book.
             status: (side != Side::Left).then(|| self.toast()).flatten(),
             margin_notes,
+            pictures,
         }
     }
 
@@ -2139,29 +2181,12 @@ fn copy(text: &str) -> std::io::Result<()> {
         return Ok(());
     }
     let mut out = std::io::stdout();
-    write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()))?;
+    write!(
+        out,
+        "\x1b]52;c;{}\x07",
+        crate::pictures::base64(text.as_bytes())
+    )?;
     out.flush()
-}
-
-fn base64(bytes: &[u8]) -> String {
-    const ABC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(ABC[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 /// Every place `query` occurs in the book, as (start, end). Letter case is
@@ -2577,6 +2602,7 @@ mod tests {
             marker: Ribbon::Yellow,
             keymap: Keymap::default(),
             rtl: false,
+            cell: None,
             folded: Default::default(),
             socket: None,
             background: mpsc::channel(),
@@ -3013,6 +3039,7 @@ mod tests {
             crate::formats::Format::Md,
             b"# One\n\na\n\n## One.1\n\nb\n\n## One.2\n\nc\n\n# Two\n\nd\n".to_vec(),
             "x",
+            None,
         )
         .unwrap();
         r.laid_for = None;
@@ -3040,6 +3067,7 @@ mod tests {
 
     #[test]
     fn base64_pads() {
+        use crate::pictures::base64;
         assert_eq!(base64(b"hi"), "aGk=");
         assert_eq!(base64(b"hello"), "aGVsbG8=");
         assert_eq!(base64("あ".as_bytes()), "44GC");

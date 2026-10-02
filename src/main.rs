@@ -10,6 +10,7 @@ mod keys;
 mod layout;
 mod marks;
 mod note;
+mod pictures;
 mod server;
 mod turn;
 mod view;
@@ -202,6 +203,9 @@ fn open(
         let book = std::fs::canonicalize(&file)?.to_string_lossy().into_owned();
         (bytes, name, Some(book))
     };
-    let doc = formats::load(format, bytes, &name)?;
+    let dir = (file.as_os_str() != "-")
+        .then(|| file.parent().map(|p| p.to_path_buf()))
+        .flatten();
+    let doc = formats::load(format, bytes, &name, dir.as_deref())?;
     app::run(doc, book, !no_spread, measure, animate, agent)
 }

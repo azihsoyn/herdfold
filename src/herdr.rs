@@ -135,3 +135,68 @@ pub fn prompt(target: &str, text: &str) -> Result<(), String> {
         .map(str::to_string)
         .unwrap_or_else(|| String::from_utf8_lossy(&out.stderr).trim().to_string()))
 }
+
+/// One request to the herdr server this pane belongs to, in herdr's own
+/// protocol, through $HERDR_SOCKET_PATH.
+fn call(method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    use std::io::{BufRead, BufReader, Write};
+    let path = std::env::var_os("HERDR_SOCKET_PATH").ok_or("not inside herdr")?;
+    let mut stream = std::os::unix::net::UnixStream::connect(path).map_err(|e| e.to_string())?;
+    let request = serde_json::json!({ "id": "herdfold", "method": method, "params": params });
+    writeln!(stream, "{request}").map_err(|e| e.to_string())?;
+    let mut line = String::new();
+    BufReader::new(stream)
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    let reply: serde_json::Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
+    match reply.get("error") {
+        Some(e) => Err(e["message"].as_str().unwrap_or("herdr refused").to_string()),
+        None => Ok(reply["result"].clone()),
+    }
+}
+
+/// The size of a character cell in `pane`, in pixels, if herdr can set
+/// pictures there.
+pub fn cell_size(pane: &str) -> Option<(u32, u32)> {
+    let info = call("pane.graphics.info", serde_json::json!({ "pane_id": pane })).ok()?;
+    let w = info["cell_width_px"].as_u64()? as u32;
+    let h = info["cell_height_px"].as_u64()? as u32;
+    (w > 0 && h > 0).then_some((w, h))
+}
+
+/// Sets a PNG of `width` x `height` pixels in `pane` as layer `layer`, over
+/// `cols` x `rows` cells from (`col`, `row`).
+#[allow(clippy::too_many_arguments)]
+pub fn set_picture(
+    pane: &str,
+    layer: &str,
+    png_base64: &str,
+    (width, height): (u32, u32),
+    (col, row): (u16, u16),
+    (cols, rows): (u16, u16),
+) -> Result<(), String> {
+    call(
+        "pane.graphics.set",
+        serde_json::json!({
+            "pane_id": pane,
+            "layer_id": layer,
+            "format": "png",
+            "image_width": width,
+            "image_height": height,
+            "data_base64": png_base64,
+            "placement": {
+                "grid_cols": cols, "grid_rows": rows,
+                "viewport_col": col, "viewport_row": row,
+            },
+        }),
+    )
+    .map(|_| ())
+}
+
+/// Takes the picture on layer `layer` out of `pane`.
+pub fn clear_picture(pane: &str, layer: &str) {
+    let _ = call(
+        "pane.graphics.clear",
+        serde_json::json!({ "pane_id": pane, "layer_id": layer }),
+    );
+}

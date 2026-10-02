@@ -13,6 +13,9 @@ pub enum Kind {
     Pre,
     /// A rule across the column, drawn with the line's one character.
     Rule,
+    /// A picture, set on rows of its own; the line's text is its
+    /// description, shown in its place where pictures cannot be.
+    Image,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -94,6 +97,39 @@ pub struct Line {
     pub hang: Option<usize>,
     /// Drawn (dim) at the start of every row of the line, e.g. a quote bar.
     pub gutter: String,
+    /// For a picture, the picture.
+    pub image: Option<Picture>,
+}
+
+/// A picture to set in the book: a PNG file and its size in pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picture {
+    pub path: std::path::PathBuf,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Picture {
+    /// The picture at `path`, if it is a PNG that can be read.
+    pub fn png(path: std::path::PathBuf) -> Option<Self> {
+        use std::io::Read;
+        let mut head = [0u8; 24];
+        std::fs::File::open(&path)
+            .ok()?
+            .read_exact(&mut head)
+            .ok()?;
+        // The signature, then the IHDR chunk with width and height.
+        if &head[..8] != b"\x89PNG\r\n\x1a\n" || &head[12..16] != b"IHDR" {
+            return None;
+        }
+        let width = u32::from_be_bytes(head[16..20].try_into().ok()?);
+        let height = u32::from_be_bytes(head[20..24].try_into().ok()?);
+        (width > 0 && height > 0).then_some(Self {
+            path,
+            width,
+            height,
+        })
+    }
 }
 
 impl Line {
@@ -105,6 +141,7 @@ impl Line {
             runs: Vec::new(),
             hang: None,
             gutter: String::new(),
+            image: None,
         }
     }
 

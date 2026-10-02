@@ -40,6 +40,7 @@ fn draw(terminal: &mut ratatui::DefaultTerminal, client: &mut Client) -> Result<
     // What was last drawn, so a quiet page is not written again (which would
     // clear a selection made with the mouse).
     let mut drawn: Option<(Option<PageView>, ratatui::layout::Size)> = None;
+    let mut pictures = crate::pictures::Pictures::new();
     loop {
         let size = terminal.size().map_err(CliError::io)?;
         let frame = (page.clone(), size);
@@ -60,6 +61,15 @@ fn draw(terminal: &mut ratatui::DefaultTerminal, client: &mut Client) -> Result<
             turning = None;
             drawn = None;
         }
+        let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+        pictures.show(
+            area,
+            if turning.is_none() {
+                page.as_ref()
+            } else {
+                None
+            },
+        );
         let wait = if turning.is_some() { 16 } else { 30 };
         if event::poll(Duration::from_millis(wait)).map_err(CliError::io)? {
             match event::read().map_err(CliError::io)? {

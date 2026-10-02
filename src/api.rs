@@ -216,6 +216,8 @@ impl EventEnvelope {
 /// Any line a client can receive.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(untagged)]
+// One is read per line and handled at once; boxing the pages buys nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum Incoming {
     Event(EventEnvelope),
     Error(ErrorResponse),

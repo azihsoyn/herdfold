@@ -68,6 +68,9 @@ pub struct PageView {
     /// Notes to set in the outer margin, beside their rows.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub margin_notes: Vec<MarginNote>,
+    /// Pictures to set over the rows left for them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<crate::pictures::PagePicture>,
 }
 
 /// A note shown in the margin, from row `row` (counted as in `rows`) down.

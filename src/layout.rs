@@ -35,6 +35,8 @@ pub struct Row {
     pub lead_width: usize,
     /// How many of the line's characters, from `pos.offset`, this row holds.
     pub len: usize,
+    /// On the first row of a picture: the columns and rows it is set in.
+    pub picture: Option<(u16, u16)>,
 }
 
 pub struct Layout {
@@ -53,17 +55,21 @@ struct Span {
 
 impl Layout {
     pub fn new(doc: &Document, width: usize, height: usize) -> Self {
-        Self::with_footnotes(doc, width, height, &[])
+        Self::with_footnotes(doc, width, height, &[], None)
     }
 
     /// Sets the document leaving room at the foot of each page for the
     /// footnotes on it: `(where, rows)` for each note, in any order. The
     /// first footnote on a page also takes a row for the rule above it.
+    /// Pictures are given rows of their own when `cell` (a character cell's
+    /// size in pixels) is known, that is where they can be shown; otherwise
+    /// their description is set as text.
     pub fn with_footnotes(
         doc: &Document,
         width: usize,
         height: usize,
         footnotes: &[(Pos, usize)],
+        cell: Option<(u32, u32)>,
     ) -> Self {
         let width = width.max(1);
         let height = height.max(1);
@@ -71,7 +77,10 @@ impl Layout {
             .lines
             .iter()
             .enumerate()
-            .flat_map(|(i, line)| set(i, line, width))
+            .flat_map(|(i, line)| match (&line.image, cell) {
+                (Some(picture), Some(cell)) => picture_rows(i, picture, width, height, cell),
+                _ => set(i, line, width),
+            })
             .collect();
         if rows.is_empty() {
             rows.push(Row {
@@ -82,6 +91,7 @@ impl Layout {
                 lead: 0,
                 lead_width: 0,
                 len: 0,
+                picture: None,
             });
         }
         // Rows of footnote each row carries: the notes on it.
@@ -178,7 +188,7 @@ fn paginate(rows: &[Row], height: usize, breaks: &HashSet<usize>, extra: &[usize
     let mut pages = Vec::new();
     let mut i = 0;
     while i < rows.len() {
-        while i < rows.len() && rows[i].text.trim().is_empty() {
+        while i < rows.len() && rows[i].text.trim().is_empty() && rows[i].kind != Kind::Image {
             i += 1;
         }
         if i == rows.len() {
@@ -190,6 +200,13 @@ fn paginate(rows: &[Row], height: usize, breaks: &HashSet<usize>, extra: &[usize
         let mut end = i + 1;
         let mut full = false;
         while end < rows.len() && !opens(&rows[end]) {
+            // A picture goes whole onto one page.
+            if let Some((_, n)) = rows[end].picture
+                && end - i + held + n as usize > room
+            {
+                full = true;
+                break;
+            }
             let more = cost(end, held);
             if end + 1 - i + held + more > room {
                 full = true;
@@ -241,6 +258,40 @@ fn can_break(before: char, after: char) -> bool {
         && !NO_END.contains(before)
 }
 
+/// A picture's rows: as wide as it is in cells, at most the column, and
+/// never so tall that it cannot share a page with a chapter's opening drop.
+fn picture_rows(
+    i: usize,
+    picture: &crate::doc::Picture,
+    width: usize,
+    height: usize,
+    (cw, ch): (u32, u32),
+) -> Vec<Row> {
+    let (pw, ph) = (picture.width as f64, picture.height as f64);
+    let (cw, ch) = (cw.max(1) as f64, ch.max(1) as f64);
+    let most = (height - height / 4).saturating_sub(1).max(1);
+    let mut cols = ((pw / cw).ceil() as usize).clamp(1, width);
+    let mut rows = ((cols as f64 * cw * ph / pw) / ch).ceil().max(1.0) as usize;
+    if rows > most {
+        rows = most;
+        cols = ((rows as f64 * ch * pw / ph) / cw)
+            .floor()
+            .clamp(1.0, width as f64) as usize;
+    }
+    (0..rows)
+        .map(|k| Row {
+            pos: Pos { line: i, offset: 0 },
+            text: String::new(),
+            spans: Vec::new(),
+            kind: Kind::Image,
+            lead: 0,
+            lead_width: 0,
+            len: 0,
+            picture: (k == 0).then_some((cols as u16, rows as u16)),
+        })
+        .collect()
+}
+
 /// Sets line `i` as rows of `width` columns, its gutter and styles applied.
 pub fn set(i: usize, line: &Line, width: usize) -> Vec<Row> {
     let w = width.saturating_sub(line.gutter.width()).max(1);
@@ -259,6 +310,7 @@ pub fn set(i: usize, line: &Line, width: usize) -> Vec<Row> {
         lead: lead.chars().count(),
         lead_width: lead.width(),
         len,
+        picture: None,
     };
     if line.kind == Kind::Rule {
         let c = line.text.chars().next().unwrap_or('─');
@@ -635,12 +687,61 @@ mod tests {
     fn footnotes_take_room_from_their_page() {
         let d = doc(&["1", "2", "3", "4", "5"]);
         // A two-row note on row "2": it and its rule take three of five rows.
-        let l = Layout::with_footnotes(&d, 10, 5, &[(Pos { line: 1, offset: 0 }, 2)]);
+        let l = Layout::with_footnotes(&d, 10, 5, &[(Pos { line: 1, offset: 0 }, 2)], None);
         let firsts: Vec<_> = (0..l.page_count())
             .map(|n| l.page(n)[0].text.as_str())
             .collect();
         assert_eq!(firsts, ["1", "3"]);
         assert_eq!(l.page(0).len(), 2);
+    }
+
+    fn pictured(lines: &[&str], at: usize, size: (u32, u32)) -> Document {
+        let mut d = doc(lines);
+        d.lines[at].kind = Kind::Image;
+        d.lines[at].image = Some(crate::doc::Picture {
+            path: "p.png".into(),
+            width: size.0,
+            height: size.1,
+        });
+        d
+    }
+
+    #[test]
+    fn a_picture_takes_rows_by_its_shape() {
+        // 10x20-pixel cells; a 100x100 picture is 10 cells wide, 5 rows tall.
+        let d = pictured(&["a", "pic", "b"], 1, (100, 100));
+        let l = Layout::with_footnotes(&d, 40, 20, &[], Some((10, 20)));
+        let rows = l.page(0);
+        assert_eq!(rows[1].picture, Some((10, 5)));
+        assert_eq!(rows.len(), 1 + 5 + 1);
+        // Without a cell size it is its description, as text.
+        let l = Layout::new(&d, 40, 20);
+        assert_eq!(l.page(0)[1].text, "pic");
+    }
+
+    #[test]
+    fn a_picture_is_never_split_across_pages() {
+        let d = pictured(&["a", "b", "c", "pic", "d"], 3, (100, 100));
+        let l = Layout::with_footnotes(&d, 40, 6, &[], Some((10, 20)));
+        // On a six-row page a picture is held to four rows (room for a
+        // chapter's drop), 8 x 4; after a, b, c it does not fit, and moves
+        // on whole rather than split.
+        let firsts: Vec<_> = (0..l.page_count())
+            .map(|n| (l.page(n)[0].picture, l.page(n).len()))
+            .collect();
+        assert_eq!(firsts, [(None, 3), (Some((8, 4)), 5)]);
+    }
+
+    #[test]
+    fn a_wide_picture_is_held_to_the_column_and_a_tall_one_to_the_page() {
+        let d = pictured(&["wide"], 0, (2000, 100));
+        let l = Layout::with_footnotes(&d, 40, 20, &[], Some((10, 20)));
+        assert_eq!(l.page(0)[0].picture, Some((40, 1)));
+        let d = pictured(&["tall"], 0, (100, 5000));
+        let l = Layout::with_footnotes(&d, 40, 20, &[], Some((10, 20)));
+        let (cols, rows) = l.page(0)[0].picture.unwrap();
+        assert_eq!(rows, 14);
+        assert!(cols < 10);
     }
 
     #[test]

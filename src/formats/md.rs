@@ -6,12 +6,21 @@
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use unicode_width::UnicodeWidthStr;
 
-use crate::doc::{Chapter, Document, Kind, Line, Run, Style};
+use crate::doc::{Chapter, Document, Kind, Line, Picture, Run, Style};
 
+#[cfg(test)]
 pub fn load(src: &str) -> Document {
+    load_in(src, None)
+}
+
+/// Reads Markdown whose pictures are found relative to `dir`.
+pub fn load_in(src: &str, dir: Option<&std::path::Path>) -> Document {
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    let mut r = Renderer::default();
+    let mut r = Renderer {
+        dir: dir.map(|d| d.to_path_buf()),
+        ..Renderer::default()
+    };
     for event in Parser::new_ext(src, options) {
         r.event(event);
     }
@@ -39,6 +48,10 @@ struct Renderer {
     items: Vec<usize>,
     /// Text of the code block being read.
     code: Option<String>,
+    /// Where pictures are looked for.
+    dir: Option<std::path::PathBuf>,
+    /// The picture being read, if it can be shown.
+    picture: Option<Picture>,
     table: Option<Table>,
 }
 
@@ -155,7 +168,19 @@ impl Renderer {
             Tag::Strong => self.inline.push(style(|s| s.bold = true)),
             Tag::Strikethrough => self.inline.push(style(|s| s.strike = true)),
             Tag::Link { .. } => self.inline.push(style(|s| s.underline = true)),
-            Tag::Image { .. } => {
+            Tag::Image { dest_url, .. } => {
+                // A picture that can be shown gets lines of its own; its
+                // description is gathered as its text.
+                let local = !dest_url.contains("://");
+                let found = match &self.dir {
+                    Some(dir) if local => Picture::png(dir.join(dest_url.as_ref())),
+                    None if local => Picture::png(dest_url.as_ref().into()),
+                    _ => None,
+                };
+                if let Some(picture) = found {
+                    self.flush();
+                    self.picture = Some(picture);
+                }
                 self.inline.push(style(|s| s.dim = true));
                 self.push("[image: ");
             }
@@ -245,6 +270,15 @@ impl Renderer {
             TagEnd::Image => {
                 self.push("]");
                 self.inline.pop();
+                if let Some(picture) = self.picture.take() {
+                    let alt = std::mem::take(&mut self.text);
+                    self.len = 0;
+                    self.runs.clear();
+                    let mut line = Line::new(alt, Kind::Image);
+                    line.style = style(|s| s.dim = true);
+                    line.image = Some(picture);
+                    self.doc.lines.push(line);
+                }
             }
             _ => {}
         }
