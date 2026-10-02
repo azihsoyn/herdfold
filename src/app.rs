@@ -705,14 +705,13 @@ impl Reader {
             self.bookmark_key(key, i);
             return false;
         }
-        if let Mode::Search { .. } = self.mode
-            && !self.search_key(key)
-        {
+        if let Mode::Search { .. } = self.mode {
+            if self.search_key(key) {
+                // The search's own key, even one that closed it: done here.
+                return false;
+            }
             // A key that is not the search's own closes it and is read as usual.
             return self.handle_key(key, right);
-        }
-        if let Mode::Search { .. } = self.mode {
-            return false;
         }
         let Some(cmd) = self.keymap.cmd(key) else {
             return false;
@@ -2723,8 +2722,19 @@ mod tests {
         let mut r = reader(&["one", "two", "three cat"], 1);
         keys(&mut r, &["/", "c", "a", "t"]);
         assert_eq!(r.page(), 2);
-        keys(&mut r, &["esc"]);
+        // Esc drops the search, and only the search.
+        assert!(!r.handle("esc"));
         assert_eq!((r.page(), r.mode.clone()), (0, Mode::Reading));
+    }
+
+    #[test]
+    fn closing_a_search_leaves_the_book_open() {
+        let mut r = reader(&["cat", "two"], 1);
+        keys(&mut r, &["/", "c", "enter", "l", "enter"]);
+        assert!(!r.handle("q"), "q closed the book, not the search");
+        keys(&mut r, &["/", "c", "enter"]);
+        assert!(!r.handle("esc"), "Esc closed the book, not the search");
+        assert_eq!(r.mode, Mode::Reading);
     }
 
     #[test]
