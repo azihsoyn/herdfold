@@ -35,10 +35,11 @@ on from left to right. Elsewhere it shows one page at a time.
 | `?` | ask the agent about the open pages |
 | `l` | bookmarks and notes: `Enter` to go, `d` to remove |
 | `N` | notes as footnotes / in the margin / as marks only (remembered) |
-| `g` | contents |
+| `g` | contents, in a drawer down the side |
 | `/` or `Ctrl-F` | search as you type; then `n` / `N` next and previous, `l` the list of finds |
 | `<` / `>` | shorter / longer rows (narrower / wider margins) |
 | `a` | page-turn animation on / off (remembered) |
+| `D` | pages run left to right / right to left (remembered per book) |
 | `h` | list the keys |
 | `T` | a tip (one greets each book until you tick "don't show again") |
 | `q` / `Esc` | close the book (`Esc` closes the contents first, if open) |
@@ -58,7 +59,7 @@ ask = "A"
 
 The actions: `next_page` `previous_page` `contents` `search` `bookmark`
 `bookmark_color` `note` `choose_row` `list` `note_display` `ask`
-`shorter_rows` `longer_rows` `animation` `help` `tip` `up` `down` `enter`
+`shorter_rows` `longer_rows` `animation` `direction` `help` `tip` `up` `down` `enter`
 `remove` `back` `quit`. `herdfold config check` reports what is wrong with
 the file; `herdfold config reset-keys` backs it up and removes `[keys]`.
 The key list (`h`) and the tips show the keys as bound.
@@ -105,6 +106,11 @@ The key list (`h`) and the tips show the keys as bound.
 - **Your place is kept** per book in `~/.local/share/herdfold/marks.json`
   (`$XDG_DATA_HOME` if set), as a position in the text rather than a page
   number, so it survives a change of pane size.
+- **Books bound on the right read from the right.** `D` turns a book round
+  so its pages run right to left, as Japanese books and manga do: the right
+  page comes first, turns sweep the other way, and the arrows follow. Each
+  book keeps its own direction; an EPUB that declares
+  `page-progression-direction="rtl"` opens that way.
 - **There is no scrolling.** Only turning. A turn is drawn: the free edge of
   the sheet (`┃`) crosses the right page and then the left, the next pages
   appearing behind it, in about a third of a second. `a` switches this off

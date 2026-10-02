@@ -137,6 +137,8 @@ pub enum Cmd {
     Color,
     /// The keys, listed.
     Help,
+    /// Which way the pages run: left to right, or right to left.
+    Direction,
     /// A tip on using the reader.
     Tip,
     /// Search the book.
@@ -196,6 +198,10 @@ pub fn column(area: Rect, width: usize) -> (u16, u16) {
 
 pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
     let Some(v) = view else { return };
+    // Page 0 is the blank facing the last page of a book bound on the right.
+    if v.number == 0 {
+        return;
+    }
     if area.height < TOP + BOTTOM || area.width < 4 {
         return;
     }

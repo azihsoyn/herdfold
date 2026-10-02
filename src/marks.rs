@@ -26,6 +26,20 @@ pub struct Entry {
     /// Reading notes, in reading order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
+    /// Which way the pages run, when set for this book with `D`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<Direction>,
+}
+
+/// Which way a book's pages run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    /// Bound on the left: the left page comes first (Western books).
+    LeftToRight,
+    /// Bound on the right: the right page comes first (Japanese vertical
+    /// text, manga).
+    RightToLeft,
 }
 
 /// A bookmark: where it is, and the colour of its ribbon.

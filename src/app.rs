@@ -22,7 +22,7 @@ use crate::doc::{Kind, Line as DocLine, Style as TextStyle};
 use crate::herdr::{self, RightPane};
 use crate::keys::{self, Keymap};
 use crate::layout::{Layout, Pos};
-use crate::marks::{self, Anchor, Author, Entry, Mark, Note, NoteDisplay, Ribbon};
+use crate::marks::{self, Anchor, Author, Direction, Entry, Mark, Note, NoteDisplay, Ribbon};
 use crate::server::{ConnId, Hub, Inbound, Server};
 use crate::turn::{Turn, Turning};
 use crate::view::{self, Cmd, MarginNote, PageRow, PageView, Side};
@@ -141,6 +141,8 @@ struct Reader {
     marker: Ribbon,
     /// Which keys do what.
     keymap: Keymap,
+    /// The pages run right to left: the right page comes first.
+    rtl: bool,
     /// Where this reader's socket is, for an agent to write notes back.
     socket: Option<PathBuf>,
     /// Outcomes of work done off the main loop (asking the agent).
@@ -174,11 +176,16 @@ pub fn run(
     let measure = starting_measure(measure, entry.measure, settings.measure);
     let animate = animate.or(settings.animate).unwrap_or(true);
     let note_display = settings.notes.unwrap_or_default();
+    let rtl = match entry.direction {
+        Some(d) => d == Direction::RightToLeft,
+        None => doc.rtl,
+    };
     let mut reader = Reader {
         layout: Layout::new(&doc, 1, 1),
         doc,
         book,
         entry,
+        rtl,
         chapter_pages: Vec::new(),
         spread: false,
         mode: Mode::Reading,
@@ -512,8 +519,44 @@ impl Reader {
         if !self.spread {
             return (self.view(p, Side::Single), None);
         }
-        let right = (p + 1 < self.layout.page_count()).then(|| self.view(p + 1, Side::Right));
+        let next = p + 1 < self.layout.page_count();
+        if self.rtl {
+            // Bound on the right: the first page of the spread is the right one.
+            let left = if next {
+                self.view(p + 1, Side::Left)
+            } else {
+                self.blank(Side::Left)
+            };
+            return (left, Some(self.view(p, Side::Right)));
+        }
+        let right = next.then(|| self.view(p + 1, Side::Right));
         (self.view(p, Side::Left), right)
+    }
+
+    /// The blank page facing a lone last page.
+    fn blank(&self, side: Side) -> PageView {
+        PageView {
+            side,
+            head: String::new(),
+            rows: Vec::new(),
+            number: 0,
+            total: self.layout.page_count(),
+            ribbon: None,
+            noted: false,
+            width: self.layout.width,
+            status: None,
+            margin_notes: Vec::new(),
+        }
+    }
+
+    /// The page shown in the right-hand pane (`right`) or the left (or only) one.
+    fn pane_page(&self, right: bool) -> usize {
+        let p = self.page();
+        if self.spread && right != self.rtl && p + 1 < self.layout.page_count() {
+            p + 1
+        } else {
+            p
+        }
     }
 
     fn view(&self, n: usize, side: Side) -> PageView {
@@ -713,6 +756,12 @@ impl Reader {
             // A key that is not the search's own closes it and is read as usual.
             return self.handle_key(key, right);
         }
+        // Bound on the right, the arrows point the way the pages run.
+        let key = match (self.rtl, key) {
+            (true, "left") => "right",
+            (true, "right") => "left",
+            (_, k) => k,
+        };
         let Some(cmd) = self.keymap.cmd(key) else {
             return false;
         };
@@ -764,11 +813,7 @@ impl Reader {
     fn read(&mut self, cmd: Cmd, right: bool) -> bool {
         let page = self.page();
         // The page in the pane the key was pressed in.
-        let here = if right && self.spread && page + 1 < self.layout.page_count() {
-            page + 1
-        } else {
-            page
-        };
+        let here = self.pane_page(right);
         match cmd {
             Cmd::Next => {
                 if page + self.step() < self.layout.page_count() {
@@ -784,6 +829,20 @@ impl Reader {
             Cmd::Animate => self.toggle_animation(),
             Cmd::NoteDisplay => self.cycle_note_display(),
             Cmd::Help => self.mode = Mode::Help,
+            Cmd::Direction => {
+                self.rtl = !self.rtl;
+                self.entry.direction = Some(if self.rtl {
+                    Direction::RightToLeft
+                } else {
+                    Direction::LeftToRight
+                });
+                self.say(if self.rtl {
+                    "Pages run right to left".into()
+                } else {
+                    "Pages run left to right".into()
+                });
+                self.save();
+            }
             Cmd::Search => {
                 self.mode = Mode::Search {
                     query: String::new(),
@@ -1005,10 +1064,7 @@ impl Reader {
         ) {
             return;
         }
-        let page = match side {
-            Side::Right => self.page() + 1,
-            Side::Left | Side::Single => self.page(),
-        };
+        let page = self.pane_page(side == Side::Right);
         // A press on the page's ribbon opens its bookmark.
         if kind == MouseKind::Down
             && let Some(i) = self.ribbon_at(page, side, size, col, row)
@@ -1393,6 +1449,12 @@ impl Reader {
 
     /// Goes to `page` by turning to it, which panes draw when animating.
     fn turn_to(&mut self, page: usize, turn: Turn) {
+        // Bound on the right, a page turns the other way across the panes.
+        let turn = match (self.rtl, turn) {
+            (false, t) => t,
+            (true, Turn::Forward) => Turn::Backward,
+            (true, Turn::Backward) => Turn::Forward,
+        };
         if self.animate {
             let side = if self.spread {
                 Side::Left
@@ -1704,23 +1766,7 @@ impl Reader {
             }
             Mode::Help => draw_help(f, &self.keymap),
             Mode::Tip { index, hide } => draw_tip(f, &self.keymap, *index, *hide),
-            Mode::Contents(sel) => {
-                let top = self.doc.chapters.iter().map(|c| c.level).min().unwrap_or(1);
-                let entries: Vec<(String, Pos, Option<Ribbon>)> = self
-                    .doc
-                    .chapters
-                    .iter()
-                    .map(|c| {
-                        let indent = "  ".repeat((c.level - top) as usize);
-                        let at = Pos {
-                            line: c.line,
-                            offset: 0,
-                        };
-                        (format!("{indent}{}", c.title), at, None)
-                    })
-                    .collect();
-                self.draw_list(f, "Contents", "Enter go · Esc close", &entries, *sel);
-            }
+            Mode::Contents(sel) => self.draw_drawer(f, *sel),
             Mode::Shelf(sel) => {
                 let entries: Vec<(String, Pos, Option<Ribbon>)> = self
                     .shelf()
@@ -1819,6 +1865,91 @@ impl Reader {
             .highlight_symbol(Span::styled("▶ ", view::current_find()))
             .highlight_spacing(ratatui::widgets::HighlightSpacing::Always)
             .highlight_style(Style::new().bg(ratatui::style::Color::Indexed(239)));
+        let mut state = ListState::default().with_selected(Some(sel));
+        f.render_stateful_widget(list, room, &mut state);
+    }
+
+    /// The contents as a drawer down the left side of the pane, the chapter
+    /// open now pointed at.
+    fn draw_drawer(&self, f: &mut Frame, sel: usize) {
+        use ratatui::widgets::{Block, Borders, Clear};
+        let area = f.area();
+        let width = (area.width / 2).clamp(24, 46).min(area.width);
+        let drawer = Rect::new(area.x, area.y, width, area.height);
+        f.render_widget(Clear, drawer);
+        let edge = Style::new().fg(ratatui::style::Color::Cyan);
+        f.render_widget(
+            Block::new()
+                .borders(Borders::RIGHT)
+                .border_style(edge)
+                .style(view::panel_style()),
+            drawer,
+        );
+        let inner = Rect::new(
+            drawer.x + 2,
+            drawer.y + 1,
+            drawer.width.saturating_sub(5),
+            drawer.height.saturating_sub(2),
+        );
+        if inner.height < 4 {
+            return;
+        }
+        let buf = f.buffer_mut();
+        buf.set_stringn(
+            inner.x,
+            inner.y,
+            "Contents",
+            inner.width as usize,
+            view::key_style(),
+        );
+        let grey = Style::new().fg(ratatui::style::Color::Indexed(245));
+        let hint = "Enter go · Esc close";
+        buf.set_stringn(
+            inner.x,
+            inner.bottom() - 1,
+            hint,
+            inner.width as usize,
+            grey,
+        );
+        let room = Rect::new(
+            inner.x,
+            inner.y + 2,
+            inner.width,
+            inner.height.saturating_sub(4),
+        );
+
+        // The chapter holding the open pages.
+        let open = self.page() + self.step();
+        let here = self.chapter_pages.iter().rposition(|&p| p < open);
+        let top = self.doc.chapters.iter().map(|c| c.level).min().unwrap_or(1);
+        let w = room.width as usize;
+        let items: Vec<ListItem> = self
+            .doc
+            .chapters
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let pointer = if Some(i) == here { "▶ " } else { "  " };
+                let indent = "  ".repeat((c.level - top) as usize);
+                let num = format!(" {}", self.chapter_pages[i] + 1);
+                let label = view::fit(
+                    &format!("{indent}{}", c.title),
+                    w.saturating_sub(num.width() + pointer.width()),
+                );
+                let gap = w.saturating_sub(pointer.width() + label.width() + num.width());
+                ListItem::new(Line::from(vec![
+                    Span::styled(pointer, view::current_find()),
+                    Span::raw(label),
+                    Span::raw(" ".repeat(gap)),
+                    Span::styled(num, grey),
+                ]))
+            })
+            .collect();
+        let list = List::new(items).style(view::panel_style()).highlight_style(
+            Style::new()
+                .bg(ratatui::style::Color::Cyan)
+                .fg(ratatui::style::Color::Black),
+        );
         let mut state = ListState::default().with_selected(Some(sel));
         f.render_stateful_widget(list, room, &mut state);
     }
@@ -2151,6 +2282,7 @@ const LISTED: &[Cmd] = &[
     Cmd::Narrower,
     Cmd::Wider,
     Cmd::Animate,
+    Cmd::Direction,
     Cmd::Help,
     Cmd::Tip,
     Cmd::Quit,
@@ -2229,6 +2361,7 @@ const TIPS: &[&str] = &[
     "After a search, `l` lists every find with the words around it.",
     "`{contents}` opens the contents, when the book has chapters.",
     "`{animation}` turns the page-turn animation off, or on again.",
+    "`{direction}` turns the book round for pages that run right to left, as Japanese books and manga do.",
     "Every key can be changed under [keys] in ~/.config/herdfold/config.toml.",
 ];
 
@@ -2364,6 +2497,7 @@ mod tests {
             dragging: None,
             marker: Ribbon::Yellow,
             keymap: Keymap::default(),
+            rtl: false,
             socket: None,
             background: mpsc::channel(),
         };
@@ -2764,6 +2898,32 @@ mod tests {
                 .enumerate()
                 .all(|(i, _)| !tip_text(&k, i).contains('{'))
         );
+    }
+
+    fn numbers(r: &Reader) -> (usize, Option<usize>) {
+        let (l, rt) = r.views();
+        (l.number, rt.map(|v| v.number))
+    }
+
+    #[test]
+    fn a_book_bound_on_the_right_reads_from_the_right_page() {
+        let mut r = reader(&["one", "two", "three"], 1);
+        r.spread = true;
+        keys(&mut r, &["D"]);
+        assert!(r.rtl);
+        assert_eq!(r.entry.direction, Some(Direction::RightToLeft));
+        // Page 1 on the right, page 2 on the left.
+        assert_eq!(numbers(&r), (2, Some(1)));
+        // The left arrow goes on; the right arrow comes back.
+        keys(&mut r, &["left"]);
+        assert_eq!(numbers(&r), (0, Some(3)), "a lone last page faces a blank");
+        keys(&mut r, &["right"]);
+        assert_eq!(numbers(&r), (2, Some(1)));
+        // m in the right-hand pane marks the right page, here the first.
+        r.handle_key("m", true);
+        assert_eq!(r.layout.page_of(r.entry.marks[0].at), 0);
+        keys(&mut r, &["D"]);
+        assert_eq!(numbers(&r), (1, Some(2)));
     }
 
     #[test]

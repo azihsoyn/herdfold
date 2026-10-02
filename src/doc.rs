@@ -130,6 +130,8 @@ pub struct Document {
     pub title: String,
     pub lines: Vec<Line>,
     pub chapters: Vec<Chapter>,
+    /// The book says its pages run right to left (bound on the right).
+    pub rtl: bool,
 }
 
 pub fn expand_tabs(s: &str) -> String {

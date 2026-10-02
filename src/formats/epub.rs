@@ -49,6 +49,7 @@ pub fn load(bytes: Vec<u8>) -> Result<Document> {
         })
         .collect();
     let spine = opf.find("spine").context("package has no spine")?;
+    let rtl = spine.attr("page-progression-direction") == Some("rtl");
 
     let mut doc = Document {
         title: opf.find("title").map(|e| e.text()).unwrap_or_default(),
@@ -108,6 +109,7 @@ pub fn load(bytes: Vec<u8>) -> Result<Document> {
     if doc.chapters.is_empty() {
         doc.chapters = headings;
     }
+    doc.rtl = rtl;
     while doc.lines.last().is_some_and(|l| l.text.is_empty()) {
         doc.lines.pop();
     }

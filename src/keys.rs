@@ -71,6 +71,12 @@ pub const ACTIONS: &[(Cmd, &str, &[&str], &str)] = &[
         &["a"],
         "page-turn animation on / off",
     ),
+    (
+        Cmd::Direction,
+        "direction",
+        &["D"],
+        "pages run left to right / right to left",
+    ),
     (Cmd::Help, "help", &["h", "H"], "these keys"),
     (Cmd::Tip, "tip", &["T"], "a tip"),
     (Cmd::Up, "up", &["k", "up"], "up, in a list"),
