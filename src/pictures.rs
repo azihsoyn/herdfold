@@ -80,13 +80,27 @@ impl Pictures {
                 }
                 clear(&mut set);
                 for p in &wanted {
-                    let Some((format, data, size)) = prepare(p, cell) else {
-                        continue;
-                    };
-                    let placed =
-                        herdr::set_picture(&pane, &layer(set), format, &data, size, p.at, p.cells);
-                    if placed.is_ok() {
-                        set += 1;
+                    // Too large for herdr: try again at half the size.
+                    for shrink in 0..4 {
+                        let Some((data, size)) = prepare(p, cell, shrink) else {
+                            break;
+                        };
+                        match herdr::set_picture(
+                            &pane,
+                            &layer(set),
+                            "png",
+                            &data,
+                            size,
+                            p.at,
+                            p.cells,
+                        ) {
+                            Ok(()) => {
+                                set += 1;
+                                break;
+                            }
+                            Err(e) if e.contains("too large") => continue,
+                            Err(_) => break,
+                        }
                     }
                 }
             }
@@ -125,25 +139,34 @@ impl Pictures {
     }
 }
 
-/// A picture ready for herdr: its format, its data in base64, and its size
-/// in pixels. A PNG that is no bigger than its cells show goes as it is;
-/// anything else is decoded, scaled down to the cells, and sent as pixels.
-fn prepare(p: &Placed, (cw, ch): (u32, u32)) -> Option<(&'static str, String, (u32, u32))> {
+/// A picture ready for herdr, as a PNG: its data in base64 and its size in
+/// pixels. A PNG that already fits its cells goes as it is; anything else
+/// is decoded, scaled down to the cells (and halved `shrink` times more),
+/// and encoded as a PNG. herdr refuses large raw pixel data, and takes the
+/// same picture compressed.
+fn prepare(p: &Placed, (cw, ch): (u32, u32), shrink: u32) -> Option<(String, (u32, u32))> {
     let bytes = std::fs::read(&p.path).ok()?;
-    let fits = (p.cells.0 as u32 * cw, p.cells.1 as u32 * ch);
+    let fits = (
+        (p.cells.0 as u32 * cw) >> shrink,
+        (p.cells.1 as u32 * ch) >> shrink,
+    );
     let png = bytes.starts_with(b"\x89PNG\r\n\x1a\n");
-    if png && p.size.0 <= fits.0 && p.size.1 <= fits.1 {
-        return Some(("png", base64(&bytes), p.size));
+    if png && shrink == 0 && p.size.0 <= fits.0 && p.size.1 <= fits.1 {
+        return Some((base64(&bytes), p.size));
     }
     let picture = image::load_from_memory(&bytes).ok()?;
     let picture = if picture.width() > fits.0 || picture.height() > fits.1 {
-        picture.resize(fits.0, fits.1, image::imageops::FilterType::Triangle)
+        picture.resize(
+            fits.0.max(1),
+            fits.1.max(1),
+            image::imageops::FilterType::Triangle,
+        )
     } else {
         picture
     };
-    let rgba = picture.to_rgba8();
-    let size = rgba.dimensions();
-    Some(("rgba", base64(rgba.as_raw()), size))
+    let mut out = std::io::Cursor::new(Vec::new());
+    picture.write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some((base64(out.get_ref()), (picture.width(), picture.height())))
 }
 
 /// Where pictures taken out of books are kept:
@@ -211,19 +234,22 @@ mod tests {
     #[test]
     fn a_small_png_goes_as_it_is() {
         let path = file("small.png", image::ImageFormat::Png, 20, 10);
-        let (format, _, size) = prepare(&placed(path.clone(), (20, 10), (4, 1)), (10, 20)).unwrap();
-        assert_eq!((format, size), ("png", (20, 10)));
+        let (data, size) = prepare(&placed(path.clone(), (20, 10), (4, 1)), (10, 20), 0).unwrap();
+        assert_eq!(size, (20, 10));
+        assert_eq!(data, base64(&std::fs::read(&path).unwrap()));
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn a_jpeg_is_decoded_and_scaled_to_its_cells() {
+    fn other_pictures_are_scaled_to_their_cells_and_sent_as_png() {
         let path = file("big.jpg", image::ImageFormat::Jpeg, 800, 400);
         // 10 x 4 cells of 10 x 20 pixels show at most 100 x 80.
-        let (format, data, size) =
-            prepare(&placed(path.clone(), (800, 400), (10, 4)), (10, 20)).unwrap();
-        assert_eq!((format, size), ("rgba", (100, 50)));
-        assert_eq!(data.len(), (100 * 50 * 4usize).div_ceil(3) * 4);
+        let p = placed(path.clone(), (800, 400), (10, 4));
+        let (data, size) = prepare(&p, (10, 20), 0).unwrap();
+        assert_eq!(size, (100, 50));
+        assert!(data.starts_with(&base64(b"\x89PNG")[..4]));
+        // Asked to shrink, it halves again.
+        assert_eq!(prepare(&p, (10, 20), 1).unwrap().1, (50, 25));
         let _ = std::fs::remove_file(path);
     }
 }
