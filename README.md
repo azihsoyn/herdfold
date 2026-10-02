@@ -5,6 +5,8 @@ Long text, laid out as facing pages you turn.
 A fold is where a herder keeps the herd, and what a sheet of paper becomes
 when it is folded into two facing pages; here it is two herdr panes, twofold.
 
+![demo](demo.gif)
+
 Scrolling has no sense of place; pages do. A page has a fixed amount on it, a
 number that says where you are, and a turn that marks where one stretch of
 reading ends and the next begins. `less`, `bat` and `ov` treat a long text as

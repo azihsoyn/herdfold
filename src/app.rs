@@ -2181,7 +2181,7 @@ fn draw_help(f: &mut Frame, keymap: &Keymap) {
         "a ribbon or marker: colour, remove, ...".into(),
     ));
     let area = f.area();
-    let width = area.width.saturating_sub(4).min(64);
+    let width = area.width.saturating_sub(4).min(72);
     let height = view::panel_height(rows.len() as u16, 1).min(area.height);
     let [row] = Split::vertical([Constraint::Length(height)])
         .flex(Flex::Center)
@@ -2206,7 +2206,7 @@ fn draw_help(f: &mut Frame, keymap: &Keymap) {
             ])
         })
         .collect();
-    let hint = "any key to close · rebind in ~/.config/herdfold/config.toml";
+    let hint = "any key to close · rebind in config.toml (see README)";
     let room = view::draw_panel(f.buffer_mut(), popup, "Keys", hint, 1);
     f.render_widget(Paragraph::new(lines).style(view::panel_style()), room);
 }
