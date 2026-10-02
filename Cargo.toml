@@ -2,8 +2,14 @@
 name = "herdfold"
 version = "0.1.0"
 edition = "2024"
-description = "Long text, laid out as facing pages you turn"
-license = "MIT"
+description = "Long text, laid out as facing pages you turn: a book reader across two herdr panes, with bookmarks, notes and an agent to ask"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azihsoyn/herdfold"
+homepage = "https://github.com/azihsoyn/herdfold"
+readme = "README.md"
+keywords = ["tui", "reader", "epub", "markdown", "herdr"]
+categories = ["command-line-utilities", "text-processing"]
+exclude = ["demo/", "demo.gif"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -19,3 +25,8 @@ toml = "0.8.23"
 toml_edit = "0.22.27"
 unicode-width = "0.2.2"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
