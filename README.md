@@ -139,3 +139,24 @@ page is drawn by `herdfold reader attach`, an ordinary client of this API.
 `herdfold api schema --json` prints the full schema; like herdr's own
 commands, CLI failures are written to stderr as
 `{"id":"cli:<group>:<command>","error":{..}}` with exit code 1.
+
+## Install
+
+```sh
+brew install azihsoyn/tap/herdfold   # Homebrew (macOS/Linux)
+cargo install herdfold               # or from crates.io
+```
+
+Or the prebuilt binary for macOS or Linux, from the
+[latest release](https://github.com/azihsoyn/herdfold/releases/latest):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/azihsoyn/herdfold/releases/latest/download/herdfold-installer.sh | sh
+```
+
+The spread needs [herdr](https://herdr.dev); without it, herdfold shows one
+page at a time.
+
+## License
+
+MIT or Apache-2.0, at your option.
