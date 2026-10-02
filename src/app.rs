@@ -143,10 +143,23 @@ struct Reader {
     keymap: Keymap,
     /// The pages run right to left: the right page comes first.
     rtl: bool,
+    /// Chapters folded shut in the contents, their sections hidden.
+    folded: std::collections::BTreeSet<usize>,
     /// Where this reader's socket is, for an agent to write notes back.
     socket: Option<PathBuf>,
     /// Outcomes of work done off the main loop (asking the agent).
     background: (Sender<String>, Receiver<String>),
+}
+
+/// Everything the left pane's frame is drawn from, so an unchanged frame
+/// is not drawn again.
+#[derive(Clone, PartialEq)]
+struct Drawn {
+    page: PageView,
+    mode: Mode,
+    dragging: Option<Pos>,
+    folded: std::collections::BTreeSet<usize>,
+    size: ratatui::layout::Size,
 }
 
 /// What a layout depends on besides the document.
@@ -186,6 +199,7 @@ pub fn run(
         book,
         entry,
         rtl,
+        folded: Default::default(),
         chapter_pages: Vec::new(),
         spread: false,
         mode: Mode::Reading,
@@ -260,7 +274,7 @@ impl Reader {
             .and_then(|s| RightPane::open(width, &s.path));
         // Keys, and whether they were pressed in the right-hand pane.
         let mut keys: Vec<(String, bool)> = Vec::new();
-        let mut drawn: Option<(PageView, Mode, Option<Pos>, ratatui::layout::Size)> = None;
+        let mut drawn: Option<Drawn> = None;
         // Hold the first page until the right pane attaches, so the book
         // opens as a spread rather than flashing a single page first.
         if let (Some(s), Some(_)) = (server, &right) {
@@ -290,7 +304,13 @@ impl Reader {
             // Draw only what changed. Writing to the terminal when nothing
             // has (even an empty frame) clears a selection made with the
             // mouse, so a quiet page is left alone.
-            let frame = (left.clone(), self.mode.clone(), self.dragging, area);
+            let frame = Drawn {
+                page: left.clone(),
+                mode: self.mode.clone(),
+                dragging: self.dragging,
+                folded: self.folded.clone(),
+                size: area,
+            };
             if self.turning.is_some() || drawn.as_ref() != Some(&frame) {
                 view::draw_whole(terminal, |f| {
                     let area = f.area();
@@ -756,22 +776,23 @@ impl Reader {
             // A key that is not the search's own closes it and is read as usual.
             return self.handle_key(key, right);
         }
-        // In the side drawer and the lists the arrows go across: left puts
-        // them away (the drawer slides back to its side), right goes where
-        // they point. The page's direction plays no part here.
-        let across = match key {
-            "left" => Some(false),
-            "right" => Some(true),
-            _ => None,
-        };
-        match (self.mode.clone(), across) {
-            (Mode::Contents(sel), Some(true)) => return self.in_contents(sel, Cmd::Enter),
-            (Mode::Shelf(sel), Some(true)) => return self.in_shelf(sel, Cmd::Enter),
-            (Mode::Contents(_) | Mode::Shelf(_), Some(false)) => {
-                self.mode = Mode::Reading;
-                return false;
+        // In the contents, the arrows only fold and unfold chapters that
+        // have sections under them; in the bookmark list they do nothing.
+        if matches!(key, "left" | "right") {
+            match self.mode {
+                Mode::Contents(sel) => {
+                    if self.has_sections(sel) {
+                        if key == "left" {
+                            self.folded.insert(sel);
+                        } else {
+                            self.folded.remove(&sel);
+                        }
+                    }
+                    return false;
+                }
+                Mode::Shelf(_) => return false,
+                _ => {}
             }
-            _ => {}
         }
         // Bound on the right, the arrows point the way the pages run.
         let key = match (self.rtl, key) {
@@ -886,9 +907,8 @@ impl Reader {
                 if self.doc.chapters.is_empty() {
                     self.say("No chapters in this input".into());
                 } else {
-                    let open = page + self.step();
-                    let here = self.chapter_pages.iter().rposition(|&p| p < open);
-                    self.mode = Mode::Contents(here.unwrap_or(0));
+                    let here = self.chapter_here().unwrap_or(0);
+                    self.mode = Mode::Contents(self.shown_as(here));
                 }
             }
             Cmd::Shelf => {
@@ -924,11 +944,49 @@ impl Reader {
         false
     }
 
+    /// The chapter holding the open pages.
+    fn chapter_here(&self) -> Option<usize> {
+        let open = self.page() + self.step();
+        self.chapter_pages.iter().rposition(|&p| p < open)
+    }
+
+    /// Whether chapter `i` has sections under it (the next chapter is deeper).
+    fn has_sections(&self, i: usize) -> bool {
+        let ch = &self.doc.chapters;
+        ch.get(i + 1).is_some_and(|next| next.level > ch[i].level)
+    }
+
+    /// The chapters the contents shows: all but those inside a folded one.
+    fn shown_chapters(&self) -> Vec<usize> {
+        let mut shown = Vec::new();
+        let mut hiding_below: Option<u8> = None;
+        for (i, c) in self.doc.chapters.iter().enumerate() {
+            if let Some(level) = hiding_below {
+                if c.level > level {
+                    continue;
+                }
+                hiding_below = None;
+            }
+            shown.push(i);
+            if self.folded.contains(&i) {
+                hiding_below = Some(c.level);
+            }
+        }
+        shown
+    }
+
+    /// Chapter `i` if the contents shows it, else the folded chapter it is in.
+    fn shown_as(&self, i: usize) -> usize {
+        let shown = self.shown_chapters();
+        shown.iter().rev().find(|&&s| s <= i).copied().unwrap_or(0)
+    }
+
     fn in_contents(&mut self, sel: usize, cmd: Cmd) -> bool {
-        let count = self.doc.chapters.len();
+        let shown = self.shown_chapters();
+        let at = shown.iter().position(|&i| i == sel).unwrap_or(0);
         match cmd {
-            Cmd::Up => self.mode = Mode::Contents(sel.saturating_sub(1)),
-            Cmd::Down => self.mode = Mode::Contents((sel + 1).min(count.saturating_sub(1))),
+            Cmd::Up => self.mode = Mode::Contents(shown[at.saturating_sub(1)]),
+            Cmd::Down => self.mode = Mode::Contents(shown[(at + 1).min(shown.len() - 1)]),
             Cmd::Enter => {
                 self.mode = Mode::Reading;
                 if let Some(&p) = self.chapter_pages.get(sel) {
@@ -1920,7 +1978,7 @@ impl Reader {
             view::key_style(),
         );
         let grey = Style::new().fg(ratatui::style::Color::Indexed(245));
-        let hint = "Enter go · Esc close";
+        let hint = "Enter go · ← → fold · Esc close";
         buf.set_stringn(
             inner.x,
             inner.bottom() - 1,
@@ -1935,22 +1993,25 @@ impl Reader {
             inner.height.saturating_sub(4),
         );
 
-        // The chapter holding the open pages.
-        let open = self.page() + self.step();
-        let here = self.chapter_pages.iter().rposition(|&p| p < open);
+        // The chapter holding the open pages, or the folded one it is in.
+        let here = self.chapter_here().map(|i| self.shown_as(i));
+        let shown = self.shown_chapters();
         let top = self.doc.chapters.iter().map(|c| c.level).min().unwrap_or(1);
         let w = room.width as usize;
-        let items: Vec<ListItem> = self
-            .doc
-            .chapters
+        let items: Vec<ListItem> = shown
             .iter()
-            .enumerate()
-            .map(|(i, c)| {
+            .map(|&i| {
+                let c = &self.doc.chapters[i];
                 let pointer = if Some(i) == here { "▶ " } else { "  " };
                 let indent = "  ".repeat((c.level - top) as usize);
+                let fold = match (self.has_sections(i), self.folded.contains(&i)) {
+                    (true, true) => "▸ ",
+                    (true, false) => "▾ ",
+                    (false, _) => "  ",
+                };
                 let num = format!(" {}", self.chapter_pages[i] + 1);
                 let label = view::fit(
-                    &format!("{indent}{}", c.title),
+                    &format!("{indent}{fold}{}", c.title),
                     w.saturating_sub(num.width() + pointer.width()),
                 );
                 let gap = w.saturating_sub(pointer.width() + label.width() + num.width());
@@ -1967,7 +2028,8 @@ impl Reader {
                 .bg(ratatui::style::Color::Cyan)
                 .fg(ratatui::style::Color::Black),
         );
-        let mut state = ListState::default().with_selected(Some(sel));
+        let at = shown.iter().position(|&i| i == sel);
+        let mut state = ListState::default().with_selected(at);
         f.render_stateful_widget(list, room, &mut state);
     }
 
@@ -2515,6 +2577,7 @@ mod tests {
             marker: Ribbon::Yellow,
             keymap: Keymap::default(),
             rtl: false,
+            folded: Default::default(),
             socket: None,
             background: mpsc::channel(),
         };
@@ -2944,33 +3007,35 @@ mod tests {
     }
 
     #[test]
-    fn arrows_go_across_the_drawer() {
-        let mut r = reader(&["# One", "a", "# Two", "b", "# Three", "c"], 1);
+    fn arrows_only_fold_and_unfold_the_contents() {
+        let mut r = reader(&["x"], 1);
         r.doc = crate::formats::load(
             crate::formats::Format::Md,
-            b"# One\n\na\n\n# Two\n\nb\n\n# Three\n\nc\n".to_vec(),
+            b"# One\n\na\n\n## One.1\n\nb\n\n## One.2\n\nc\n\n# Two\n\nd\n".to_vec(),
             "x",
         )
         .unwrap();
         r.laid_for = None;
         r.fit((20, 4), false);
-        keys(&mut r, &["g", "j", "right"]);
-        assert_eq!(r.mode, Mode::Reading);
-        assert_eq!(
-            r.page(),
-            r.chapter_pages[1],
-            "right went to the chosen chapter"
-        );
-        let here = r.page();
-        keys(&mut r, &["g", "j", "left"]);
-        assert_eq!(
-            (r.mode.clone(), r.page()),
-            (Mode::Reading, here),
-            "left only put it away"
-        );
-        // Bound on the right, the drawer's arrows stay the same.
-        keys(&mut r, &["D", "g", "k", "right"]);
-        assert_eq!(r.page(), r.chapter_pages[0]);
+        let shown = |r: &Reader| r.shown_chapters();
+        keys(&mut r, &["g"]);
+        assert_eq!(r.mode, Mode::Contents(0));
+        assert_eq!(shown(&r), [0, 1, 2, 3]);
+        // Left folds the chapter with sections; the page does not move.
+        keys(&mut r, &["left"]);
+        assert_eq!((shown(&r), r.page()), (vec![0, 3], 0));
+        assert_eq!(r.mode, Mode::Contents(0));
+        // Down skips what is folded away.
+        keys(&mut r, &["j"]);
+        assert_eq!(r.mode, Mode::Contents(3));
+        // A chapter without sections ignores the arrows.
+        keys(&mut r, &["left", "right"]);
+        assert_eq!((r.mode.clone(), shown(&r)), (Mode::Contents(3), vec![0, 3]));
+        keys(&mut r, &["k", "right"]);
+        assert_eq!(shown(&r), [0, 1, 2, 3]);
+        // The bookmark list ignores them too.
+        keys(&mut r, &["esc", "m", "l", "right", "left"]);
+        assert_eq!(r.mode, Mode::Shelf(0));
     }
 
     #[test]
