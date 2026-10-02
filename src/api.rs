@@ -16,7 +16,7 @@ use crate::view::PageView;
 pub const PROTOCOL: u32 = 1;
 pub const SCHEMA_VERSION: u32 = 1;
 /// Where a reader's socket is, for the processes it starts.
-pub const SOCKET_ENV: &str = "HERDBOOK_SOCKET_PATH";
+pub const SOCKET_ENV: &str = "HERDFOLD_SOCKET_PATH";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(title = "Request")]
@@ -239,7 +239,7 @@ pub fn schema() -> Value {
             "request": one::<Request>("request"),
             "success_response": one::<SuccessResponse>("success_response"),
         },
-        "title": "Herdbook API",
+        "title": "Herdfold API",
     })
 }
 

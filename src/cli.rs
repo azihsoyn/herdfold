@@ -38,7 +38,7 @@ pub fn finish(id: &str, result: Result<(), CliError>) -> ExitCode {
     }
 }
 
-/// `herdbook api schema [--json | --output PATH]`
+/// `herdfold api schema [--json | --output PATH]`
 pub fn api_schema(json: bool, output: Option<PathBuf>) -> Result<(), CliError> {
     let schema = api::schema();
     if let Some(path) = output {
@@ -57,13 +57,13 @@ pub fn api_schema(json: bool, output: Option<PathBuf>) -> Result<(), CliError> {
             .map(|m| m.keys().collect())
             .unwrap_or_default();
         let names: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-        println!("Herdbook API schema");
+        println!("Herdfold API schema");
         println!("protocol: {PROTOCOL}");
         println!("schema_version: {SCHEMA_VERSION}");
         println!("schemas: {}", names.join(", "));
         println!();
-        println!("Use `herdbook api schema --json` to print the full schema.");
-        println!("Use `herdbook api schema --output PATH` to write it to a file.");
+        println!("Use `herdfold api schema --json` to print the full schema.");
+        println!("Use `herdfold api schema --output PATH` to write it to a file.");
     }
     Ok(())
 }

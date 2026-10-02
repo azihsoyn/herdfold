@@ -210,7 +210,7 @@ pub fn run(
     reader.keymap = keymap;
     if !problems.is_empty() {
         reader.say(format!(
-            "config.toml: {} problem(s), see `herdbook config check`",
+            "config.toml: {} problem(s), see `herdfold config check`",
             problems.len()
         ));
     }
@@ -1491,7 +1491,7 @@ impl Reader {
             .unwrap_or_default();
         let source = self.book.as_deref().unwrap_or("stdin");
         let mut out = format!(
-            "Someone reading \"{}\" ({source}) in herdbook asks, at p.{} of {}{chapter}:\n\n{question}\n",
+            "Someone reading \"{}\" ({source}) in herdfold asks, at p.{} of {}{chapter}:\n\n{question}\n",
             self.doc.title,
             pages.start + 1,
             self.layout.page_count(),
@@ -1519,7 +1519,7 @@ impl Reader {
         if let Some(socket) = &self.socket {
             let exe = std::env::current_exe()
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "herdbook".into());
+                .unwrap_or_else(|_| "herdfold".into());
             // A note on a passage is set beside its first row.
             let anchor = match anchor {
                 Anchor::Page => "page",
@@ -2207,7 +2207,7 @@ fn draw_help(f: &mut Frame, keymap: &Keymap) {
             ])
         })
         .collect();
-    let hint = "any key to close · rebind in ~/.config/herdbook/config.toml";
+    let hint = "any key to close · rebind in ~/.config/herdfold/config.toml";
     let room = view::draw_panel(f.buffer_mut(), popup, "Keys", hint, 1);
     f.render_widget(Paragraph::new(lines).style(view::panel_style()), room);
 }
@@ -2230,7 +2230,7 @@ const TIPS: &[&str] = &[
     "After a search, `l` lists every find with the words around it.",
     "`{contents}` opens the contents, when the book has chapters.",
     "`{animation}` turns the page-turn animation off, or on again.",
-    "Every key can be changed under [keys] in ~/.config/herdbook/config.toml.",
+    "Every key can be changed under [keys] in ~/.config/herdfold/config.toml.",
 ];
 
 /// A tip with `{action}` replaced by the first key bound to that action.
@@ -2467,7 +2467,7 @@ mod tests {
         assert!(p.contains("at p.1 of 1:\n\nwhy?\n"));
         assert!(p.contains("this row:\n> two's\n"));
         assert!(p.contains("--- p.1 ---\none\ntwo's\nthree\n"));
-        assert!(p.contains("HERDBOOK_SOCKET_PATH='/tmp/hb.sock' "));
+        assert!(p.contains("HERDFOLD_SOCKET_PATH='/tmp/hb.sock' "));
         assert!(p.contains(
             "note add --line 1 --offset 0 --anchor line --question 'why?' '<your short answer>'"
         ));

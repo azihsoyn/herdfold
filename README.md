@@ -1,6 +1,9 @@
-# herdbook
+# herdfold
 
 Long text, laid out as facing pages you turn.
+
+A fold is where a herder keeps the herd, and what a sheet of paper becomes
+when it is folded into two facing pages; here it is two herdr panes, twofold.
 
 Scrolling has no sense of place; pages do. A page has a fixed amount on it, a
 number that says where you are, and a turn that marks where one stretch of
@@ -8,9 +11,9 @@ reading ends and the next begins. `less`, `bat` and `ov` treat a long text as
 an endless strip; this treats it as a book.
 
 ```sh
-herdbook --format epub the-book.epub
-herdbook --format md README.md
-gh pr diff 123 | herdbook --format diff -
+herdfold --format epub the-book.epub
+herdfold --format md README.md
+gh pr diff 123 | herdfold --format diff -
 ```
 
 Inside [herdr](https://herdr.dev) the pane splits in two and the book opens
@@ -39,7 +42,7 @@ on from left to right. Elsewhere it shows one page at a time.
 | `q` / `Esc` | close the book (`Esc` closes the contents first, if open) |
 
 Every key can be rebound, as herdr's own are, under `[keys]` in
-`~/.config/herdbook/config.toml` (`$XDG_CONFIG_HOME` if set). Name an
+`~/.config/herdfold/config.toml` (`$XDG_CONFIG_HOME` if set). Name an
 action and give a key or a list of keys, by herdr's key names; that action
 loses its defaults, and `""` leaves it unbound:
 
@@ -54,8 +57,8 @@ ask = "A"
 The actions: `next_page` `previous_page` `contents` `search` `bookmark`
 `bookmark_color` `note` `choose_row` `list` `note_display` `ask`
 `shorter_rows` `longer_rows` `animation` `help` `tip` `up` `down` `enter`
-`remove` `back` `quit`. `herdbook config check` reports what is wrong with
-the file; `herdbook config reset-keys` backs it up and removes `[keys]`.
+`remove` `back` `quit`. `herdfold config check` reports what is wrong with
+the file; `herdfold config reset-keys` backs it up and removes `[keys]`.
 The key list (`h`) and the tips show the keys as bound.
 
 ## What it does, and what it doesn't
@@ -93,11 +96,11 @@ The key list (`h`) and the tips show the keys as bound.
   open pages (and the chosen row, from `v`), to a herdr agent in the same
   tab (else the same workspace, or the one named with `--agent`). It
   answers in its own pane, and keeps a short answer in the book as a note
-  (`✦`) by running `herdbook note add`.
+  (`✦`) by running `herdfold note add`.
 - **A bookmark is a ribbon** hanging from the top of its page into the
   margin by the gutter, in one of six colours (`c` changes it; new
   bookmarks take the colour last chosen).
-- **Your place is kept** per book in `~/.local/share/herdbook/marks.json`
+- **Your place is kept** per book in `~/.local/share/herdfold/marks.json`
   (`$XDG_DATA_HOME` if set), as a position in the text rather than a page
   number, so it survives a change of pane size.
 - **There is no scrolling.** Only turning. A turn is drawn: the free edge of
@@ -112,7 +115,7 @@ The key list (`h`) and the tips show the keys as bound.
 ## Socket API
 
 The reader speaks herdr's protocol: newline-delimited JSON over a Unix
-socket, whose path it hands to the panes it opens as `HERDBOOK_SOCKET_PATH`.
+socket, whose path it hands to the panes it opens as `HERDFOLD_SOCKET_PATH`.
 
 ```
 {"id":"1","method":"ping","params":{}}
@@ -127,10 +130,10 @@ socket, whose path it hands to the panes it opens as `HERDBOOK_SOCKET_PATH`.
 ```
 
 The right-hand pane passes its mouse presses on with `reader.send_mouse`.
-`note.add` writes a note into the open book (`herdbook note add` is the same
+`note.add` writes a note into the open book (`herdfold note add` is the same
 from a shell, which is how an agent answers). Failures are
 `{"id":..,"error":{"code":..,"message":..}}`. The right-hand
-page is drawn by `herdbook reader attach`, an ordinary client of this API.
-`herdbook api schema --json` prints the full schema; like herdr's own
+page is drawn by `herdfold reader attach`, an ordinary client of this API.
+`herdfold api schema --json` prints the full schema; like herdr's own
 commands, CLI failures are written to stderr as
 `{"id":"cli:<group>:<command>","error":{..}}` with exit code 1.

@@ -1,4 +1,4 @@
-//! `herdbook reader attach`: a client of a reader's socket that draws the
+//! `herdfold reader attach`: a client of a reader's socket that draws the
 //! right-hand page. It checks the protocol with `ping`, attaches with its
 //! size, subscribes to `page.shown` and `reader.closed`, and passes every
 //! key back through `reader.send_keys`, so the book turns from either pane.

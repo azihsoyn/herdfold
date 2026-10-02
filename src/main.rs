@@ -72,13 +72,13 @@ enum Command {
     /// Reader helpers over the socket API
     #[command(subcommand)]
     Reader(ReaderCommand),
-    /// Notes in the book open in the reader at $HERDBOOK_SOCKET_PATH
+    /// Notes in the book open in the reader at $HERDFOLD_SOCKET_PATH
     #[command(subcommand)]
     Note(NoteCommand),
     /// Inspect the socket API
     #[command(subcommand)]
     Api(ApiCommand),
-    /// Manage local configuration ($XDG_CONFIG_HOME/herdbook/config.toml)
+    /// Manage local configuration ($XDG_CONFIG_HOME/herdfold/config.toml)
     #[command(subcommand)]
     Config(ConfigCommand),
 }
@@ -117,7 +117,7 @@ enum NoteCommand {
 
 #[derive(Subcommand)]
 enum ReaderCommand {
-    /// Draw the right-hand page of the reader at $HERDBOOK_SOCKET_PATH
+    /// Draw the right-hand page of the reader at $HERDFOLD_SOCKET_PATH
     Attach,
 }
 

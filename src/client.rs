@@ -1,4 +1,4 @@
-//! A client of a reader's socket, found through `HERDBOOK_SOCKET_PATH`:
+//! A client of a reader's socket, found through `HERDFOLD_SOCKET_PATH`:
 //! requests in herdr's shape, answers matched to them by id.
 
 use std::io::{BufRead, BufReader, Write};

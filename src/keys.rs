@@ -1,5 +1,5 @@
 //! Key bindings, read as herdr reads its own: a `[keys]` table in
-//! `$XDG_CONFIG_HOME/herdbook/config.toml` (default `~/.config/herdbook/`),
+//! `$XDG_CONFIG_HOME/herdfold/config.toml` (default `~/.config/herdfold/`),
 //! each action bound to a key or a list of keys by herdr's key names. An
 //! action named there loses its default keys; `""` leaves it unbound.
 
@@ -110,7 +110,7 @@ pub fn config_path() -> Option<PathBuf> {
     Some(base.join(NAME).join("config.toml"))
 }
 
-/// Whether `key` is a key name herdbook can receive.
+/// Whether `key` is a key name herdfold can receive.
 pub fn valid(key: &str) -> bool {
     let base = key.strip_prefix("ctrl+").unwrap_or(key);
     base.chars().count() == 1 || NAMED.contains(&base)
@@ -194,7 +194,7 @@ impl Keymap {
                     if valid(k) {
                         keys.push(k.to_string());
                     } else {
-                        problems.push(format!("keys.{name}: \"{k}\" is not a key herdbook knows"));
+                        problems.push(format!("keys.{name}: \"{k}\" is not a key herdfold knows"));
                     }
                 }
                 bound.insert(cmd, keys);
@@ -261,7 +261,7 @@ fn shown(key: &str) -> String {
     }
 }
 
-/// `herdbook config check`: says whether the config reads cleanly.
+/// `herdfold config check`: says whether the config reads cleanly.
 pub fn check() -> Result<(), crate::cli::CliError> {
     let (_, problems) = Keymap::load();
     let path = config_path()
@@ -280,7 +280,7 @@ pub fn check() -> Result<(), crate::cli::CliError> {
     ))
 }
 
-/// `herdbook config reset-keys`: backs the config up, then removes `[keys]`.
+/// `herdfold config reset-keys`: backs the config up, then removes `[keys]`.
 pub fn reset() -> Result<(), crate::cli::CliError> {
     use crate::cli::CliError;
     let path = config_path().ok_or_else(|| CliError::new("no_config", "no HOME to find it in"))?;

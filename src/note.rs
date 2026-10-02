@@ -1,4 +1,4 @@
-//! `herdbook note add`: writes a note into the book open in a reader, the
+//! `herdfold note add`: writes a note into the book open in a reader, the
 //! way an agent answering the reader's question keeps its answer.
 
 use crate::api::{Call, NoteAddParams};

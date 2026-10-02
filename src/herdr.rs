@@ -19,7 +19,7 @@ pub struct RightPane {
 }
 
 impl RightPane {
-    /// Splits the calling pane and runs `herdbook reader attach` in the new
+    /// Splits the calling pane and runs `herdfold reader attach` in the new
     /// half, pointed at `socket`.
     pub fn open(width: u16, socket: &Path) -> Option<Self> {
         if std::env::var_os("HERDR_PANE_ID").is_none() || width < MIN_WIDTH {
