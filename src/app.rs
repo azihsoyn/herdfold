@@ -20,6 +20,7 @@ use crate::api::{
 use crate::doc::Document;
 use crate::doc::{Kind, Line as DocLine, Style as TextStyle};
 use crate::herdr::{self, RightPane};
+use crate::keys::{self, Keymap};
 use crate::layout::{Layout, Pos};
 use crate::marks::{self, Anchor, Author, Entry, Mark, Note, NoteDisplay, Ribbon};
 use crate::server::{ConnId, Hub, Inbound, Server};
@@ -138,6 +139,8 @@ struct Reader {
     dragging: Option<Pos>,
     /// Colour for the next highlighter marker.
     marker: Ribbon,
+    /// Which keys do what.
+    keymap: Keymap,
     /// Where this reader's socket is, for an agent to write notes back.
     socket: Option<PathBuf>,
     /// Outcomes of work done off the main loop (asking the agent).
@@ -195,6 +198,7 @@ pub fn run(
         ribbon: settings.ribbon.unwrap_or_default(),
         dragging: None,
         marker: settings.marker.unwrap_or(Ribbon::Yellow),
+        keymap: Keymap::default(),
         socket: None,
         background: mpsc::channel(),
     };
@@ -202,6 +206,14 @@ pub fn run(
     // writes its answers back here.
     let server = Server::listen().ok();
     reader.socket = server.as_ref().map(|s| s.path.clone());
+    let (keymap, problems) = Keymap::load();
+    reader.keymap = keymap;
+    if !problems.is_empty() {
+        reader.say(format!(
+            "config.toml: {} problem(s), see `herdbook config check`",
+            problems.len()
+        ));
+    }
     // A tip greets the book, a different one each time, until switched off.
     if settings.tips != Some(false) {
         let index = settings.next_tip.unwrap_or(0) % TIPS.len();
@@ -702,7 +714,7 @@ impl Reader {
         if let Mode::Search { .. } = self.mode {
             return false;
         }
-        let Some(cmd) = view::cmd_of(key) else {
+        let Some(cmd) = self.keymap.cmd(key) else {
             return false;
         };
         match self.mode.clone() {
@@ -1691,8 +1703,8 @@ impl Reader {
                     draw_marker(f, &quote, &note.text, note.color.unwrap_or(Ribbon::Yellow));
                 }
             }
-            Mode::Help => draw_help(f),
-            Mode::Tip { index, hide } => draw_tip(f, *index, *hide),
+            Mode::Help => draw_help(f, &self.keymap),
+            Mode::Tip { index, hide } => draw_tip(f, &self.keymap, *index, *hide),
             Mode::Contents(sel) => {
                 let top = self.doc.chapters.iter().map(|c| c.level).min().unwrap_or(1);
                 let entries: Vec<(String, Pos, Option<Ribbon>)> = self
@@ -2124,81 +2136,120 @@ fn footnote_rows(note: &Note, width: usize) -> Vec<PageRow> {
         .collect()
 }
 
-/// The keys, as `h` lists them.
-const KEYS: &[(&str, &str)] = &[
-    ("Space  →", "turn the page"),
-    ("b  ←", "turn back"),
-    ("g", "contents"),
-    ("", ""),
-    ("m", "bookmark this page (again to remove)"),
-    ("c", "colour of the bookmark here"),
-    ("drag", "choose text: marker, note, ask, copy"),
-    ("click", "a ribbon or marker: colour, remove, ..."),
-    ("n", "write a note on this page"),
-    ("v", "choose a row: Enter to note it, ? to ask"),
-    ("l", "bookmarks and notes (Enter go, d remove)"),
-    ("N", "notes as footnotes / in margin / marks"),
-    ("?", "ask the agent about these pages"),
-    ("", ""),
-    ("<  >", "shorter / longer rows"),
-    ("a", "page-turn animation on / off"),
-    ("/  ^F", "search (n / N next, previous; l list)"),
-    ("h", "these keys"),
-    ("T", "a tip"),
-    ("q  Esc", "close the book"),
+/// Actions shown one a row in the key list; the list keys share a row.
+const LISTED: &[Cmd] = &[
+    Cmd::Next,
+    Cmd::Prev,
+    Cmd::Contents,
+    Cmd::Search,
+    Cmd::Mark,
+    Cmd::Color,
+    Cmd::NotePage,
+    Cmd::Select,
+    Cmd::Shelf,
+    Cmd::NoteDisplay,
+    Cmd::Ask,
+    Cmd::Narrower,
+    Cmd::Wider,
+    Cmd::Animate,
+    Cmd::Help,
+    Cmd::Tip,
+    Cmd::Quit,
 ];
 
-fn draw_help(f: &mut Frame) {
+/// The key list, as bound now (`h`).
+fn draw_help(f: &mut Frame, keymap: &Keymap) {
+    let mut rows: Vec<(String, String)> = LISTED
+        .iter()
+        .map(|&cmd| {
+            let what = keys::ACTIONS
+                .iter()
+                .find(|a| a.0 == cmd)
+                .map(|a| a.3)
+                .unwrap_or("");
+            (keymap.label(cmd), what.to_string())
+        })
+        .collect();
+    let list = [Cmd::Up, Cmd::Down, Cmd::Enter, Cmd::Delete, Cmd::Back]
+        .iter()
+        .map(|&c| keymap.first(c))
+        .collect::<Vec<_>>()
+        .join(" ");
+    rows.push((list, "in lists: up, down, go, remove, back".into()));
+    rows.push(("drag".into(), "choose text: marker, note, ask, copy".into()));
+    rows.push((
+        "click".into(),
+        "a ribbon or marker: colour, remove, ...".into(),
+    ));
     let area = f.area();
-    let width = area.width.saturating_sub(4).min(56);
-    let height = view::panel_height(KEYS.len() as u16, 1).min(area.height);
+    let width = area.width.saturating_sub(4).min(64);
+    let height = view::panel_height(rows.len() as u16, 1).min(area.height);
     let [row] = Split::vertical([Constraint::Length(height)])
         .flex(Flex::Center)
         .areas(area);
     let [popup] = Split::horizontal([Constraint::Length(width)])
         .flex(Flex::Center)
         .areas(row);
-    let lines: Vec<Line> = KEYS
+    let keys_w = rows
         .iter()
+        .map(|(k, _)| k.width())
+        .max()
+        .unwrap_or(0)
+        .min(16)
+        + 2;
+    let lines: Vec<Line> = rows
+        .into_iter()
         .map(|(k, what)| {
+            let pad = " ".repeat(keys_w.saturating_sub(k.width()));
             Line::from(vec![
-                Span::styled(format!("{k:<9}"), view::key_style()),
-                Span::raw(*what),
+                Span::styled(format!("{k}{pad}"), view::key_style()),
+                Span::raw(what),
             ])
         })
         .collect();
-    let room = view::draw_panel(f.buffer_mut(), popup, "Keys", "any key to close", 1);
+    let hint = "any key to close · rebind in ~/.config/herdbook/config.toml";
+    let room = view::draw_panel(f.buffer_mut(), popup, "Keys", hint, 1);
     f.render_widget(Paragraph::new(lines).style(view::panel_style()), room);
 }
 
 /// Tips, one shown each time a book opens.
 /// Keys are set off in backticks.
 const TIPS: &[&str] = &[
-    "`h` lists every key, any time.",
-    "`m` hangs a ribbon on the page as a bookmark; `c` changes its colour.",
-    "`n` writes a note on the page. `v` picks a row, and `Enter` writes a note on that row.",
-    "`?` asks the agent beside the book about the pages in front of you. Its answer comes back as a note.",
-    "`N` shows notes as footnotes, in the margin, or as marks only.",
-    "`<` and `>` shorten and lengthen the rows. Each book remembers its own.",
-    "`l` lists the bookmarks and notes: `Enter` goes there, `d` removes one.",
+    "`{help}` lists every key, any time.",
+    "`{bookmark}` hangs a ribbon on the page as a bookmark; `{bookmark_color}` changes its colour.",
+    "`{note}` writes a note on the page. `{choose_row}` picks a row, and `Enter` writes a note on that row.",
+    "`{ask}` asks the agent beside the book about the pages in front of you. Its answer comes back as a note.",
+    "`{note_display}` shows notes as footnotes, in the margin, or as marks only.",
+    "`{shorter_rows}` and `{longer_rows}` shorten and lengthen the rows. Each book remembers its own.",
+    "`{list}` lists the bookmarks and notes: `{enter}` goes there, `{remove}` removes one.",
     "Drag over text to choose it, then `m` lays a highlighter marker over it.",
     "Click a marker to change its colour (`c`), write a note on it (`n`), or remove it (`d`).",
     "Click a bookmark's ribbon to change its colour (`c`) or take it out (`d`).",
-    "In a spread, `m` bookmarks the page of the pane you press it in.",
-    "`/` (or `Ctrl-F`) searches the book; `n` and `N` go to the next and previous find.",
+    "In a spread, `{bookmark}` bookmarks the page of the pane you press it in.",
+    "`{search}` searches the book; `n` and `N` go to the next and previous find.",
     "After a search, `l` lists every find with the words around it.",
-    "`g` opens the contents, when the book has chapters.",
-    "`a` turns the page-turn animation off, or on again.",
+    "`{contents}` opens the contents, when the book has chapters.",
+    "`{animation}` turns the page-turn animation off, or on again.",
+    "Every key can be changed under [keys] in ~/.config/herdbook/config.toml.",
 ];
 
-fn draw_tip(f: &mut Frame, index: usize, hide: bool) {
+/// A tip with `{action}` replaced by the first key bound to that action.
+fn tip_text(keymap: &Keymap, index: usize) -> String {
+    let mut out = TIPS[index].to_string();
+    for &(cmd, name, ..) in keys::ACTIONS {
+        out = out.replace(&format!("{{{name}}}"), &keymap.first(cmd));
+    }
+    out
+}
+
+fn draw_tip(f: &mut Frame, keymap: &Keymap, index: usize, hide: bool) {
     let area = f.area();
     let width = area.width.saturating_sub(4).min(58);
     let inner = width.saturating_sub(4) as usize;
     // Wrap the tip as text, its keys carried along as styled runs.
     let mut plain = String::new();
     let mut runs = Vec::new();
-    for (i, part) in TIPS[index].split('`').enumerate() {
+    for (i, part) in tip_text(keymap, index).split('`').enumerate() {
         let start = plain.chars().count();
         plain.push_str(part);
         if i % 2 == 1 {
@@ -2313,6 +2364,7 @@ mod tests {
             ribbon: Ribbon::default(),
             dragging: None,
             marker: Ribbon::Yellow,
+            keymap: Keymap::default(),
             socket: None,
             background: mpsc::channel(),
         };
@@ -2680,6 +2732,28 @@ mod tests {
         let mut r = reader(&["cat", "two", "three"], 1);
         keys(&mut r, &["/", "c", "enter", "space"]);
         assert_eq!((r.page(), r.mode.clone()), (1, Mode::Reading));
+    }
+
+    #[test]
+    fn rebound_keys_take_over() {
+        let mut r = reader(&["one", "two", "three"], 1);
+        r.keymap = Keymap::parse("[keys]\nnext_page = \"l\"\nlist = \"L\"\n").0;
+        keys(&mut r, &["space"]);
+        assert_eq!(r.page(), 0);
+        keys(&mut r, &["l"]);
+        assert_eq!(r.page(), 1);
+    }
+
+    #[test]
+    fn tips_name_the_keys_as_bound() {
+        let k = Keymap::parse("[keys]\nhelp = \"?\"\nask = \"A\"\n").0;
+        assert_eq!(tip_text(&k, 0), "`?` lists every key, any time.");
+        assert!(tip_text(&Keymap::default(), 0).starts_with("`h`"));
+        assert!(
+            TIPS.iter()
+                .enumerate()
+                .all(|(i, _)| !tip_text(&k, i).contains('{'))
+        );
     }
 
     #[test]

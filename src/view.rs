@@ -104,8 +104,9 @@ pub struct PageRow {
     pub selected: bool,
 }
 
-/// What a key asks for, in either pane.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// What a key asks for, in either pane. Which keys ask for what is in
+/// `keys`, and can be changed in the config.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cmd {
     Next,
     Prev,
@@ -170,35 +171,6 @@ pub fn key_name(key: KeyEvent) -> Option<String> {
         format!("ctrl+{base}")
     } else {
         base
-    })
-}
-
-pub fn cmd_of(key: &str) -> Option<Cmd> {
-    Some(match key {
-        "space" | "right" | "pagedown" => Cmd::Next,
-        "b" | "left" | "pageup" => Cmd::Prev,
-        "m" => Cmd::Mark,
-        "g" => Cmd::Contents,
-        "q" | "ctrl+c" => Cmd::Quit,
-        "k" | "up" => Cmd::Up,
-        "j" | "down" => Cmd::Down,
-        "enter" => Cmd::Enter,
-        "esc" => Cmd::Back,
-        ">" => Cmd::Wider,
-        "<" => Cmd::Narrower,
-        "a" => Cmd::Animate,
-        "n" => Cmd::NotePage,
-        "v" => Cmd::Select,
-        "l" => Cmd::Shelf,
-        "N" => Cmd::NoteDisplay,
-        "?" => Cmd::Ask,
-        "c" => Cmd::Color,
-        "h" | "H" => Cmd::Help,
-        "T" => Cmd::Tip,
-        // Cmd-F belongs to the terminal and never arrives; Ctrl-F does.
-        "/" | "ctrl+f" => Cmd::Search,
-        "d" => Cmd::Delete,
-        _ => return None,
     })
 }
 
@@ -563,9 +535,6 @@ mod tests {
             press(KeyCode::Char('c'), KeyModifiers::CONTROL).as_deref(),
             Some("ctrl+c")
         );
-        assert_eq!(cmd_of("space"), Some(Cmd::Next));
-        assert_eq!(cmd_of("ctrl+c"), Some(Cmd::Quit));
-        assert_eq!(cmd_of("x"), None);
     }
 
     #[test]

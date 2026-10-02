@@ -6,6 +6,7 @@ mod client;
 mod doc;
 mod formats;
 mod herdr;
+mod keys;
 mod layout;
 mod marks;
 mod note;
@@ -77,6 +78,17 @@ enum Command {
     /// Inspect the socket API
     #[command(subcommand)]
     Api(ApiCommand),
+    /// Manage local configuration ($XDG_CONFIG_HOME/herdbook/config.toml)
+    #[command(subcommand)]
+    Config(ConfigCommand),
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Validate config.toml and print diagnostics
+    Check,
+    /// Back up config.toml and remove custom keybindings
+    ResetKeys,
 }
 
 #[derive(Subcommand)]
@@ -136,6 +148,12 @@ fn main() -> Result<ExitCode> {
         })) => {
             let params = note::params(text, note::place(line, offset), anchor, by, question);
             Ok(cli::finish("note:add", note::add(params)))
+        }
+        Some(Command::Config(ConfigCommand::Check)) => {
+            Ok(cli::finish("config:check", keys::check()))
+        }
+        Some(Command::Config(ConfigCommand::ResetKeys)) => {
+            Ok(cli::finish("config:reset-keys", keys::reset()))
         }
         Some(Command::Api(ApiCommand::Schema { json, output })) => {
             Ok(cli::finish("api:schema", cli::api_schema(json, output)))

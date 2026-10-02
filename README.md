@@ -38,6 +38,26 @@ on from left to right. Elsewhere it shows one page at a time.
 | `T` | a tip (one greets each book until you tick "don't show again") |
 | `q` / `Esc` | close the book (`Esc` closes the contents first, if open) |
 
+Every key can be rebound, as herdr's own are, under `[keys]` in
+`~/.config/herdbook/config.toml` (`$XDG_CONFIG_HOME` if set). Name an
+action and give a key or a list of keys, by herdr's key names; that action
+loses its defaults, and `""` leaves it unbound:
+
+```toml
+[keys]
+next_page = ["l", "space"]
+previous_page = ["h", "b"]
+help = "?"
+ask = "A"
+```
+
+The actions: `next_page` `previous_page` `contents` `search` `bookmark`
+`bookmark_color` `note` `choose_row` `list` `note_display` `ask`
+`shorter_rows` `longer_rows` `animation` `help` `tip` `up` `down` `enter`
+`remove` `back` `quit`. `herdbook config check` reports what is wrong with
+the file; `herdbook config reset-keys` backs it up and removes `[keys]`.
+The key list (`h`) and the tips show the keys as bound.
+
 ## What it does, and what it doesn't
 
 - **Pages are cut mechanically**, by the height of the pane. The text is never
