@@ -25,7 +25,7 @@ on from left to right. Elsewhere it shows one page at a time.
 | `c` | change the colour of the bookmark here |
 | `n` | write a note on the page |
 | drag | choose text with the mouse, then `m` marker · `n` note · `?` ask · `y` copy |
-| click | on a marker: `c` colour · `n` note · `d` remove |
+| click | on a ribbon: `c` colour · `d` remove; on a marker: `c` colour · `n` note · `d` remove |
 | `v` | choose a row (`j` / `k`), then `Enter` to write a note on it, or `?` to ask about it |
 | `?` | ask the agent about the open pages |
 | `l` | bookmarks and notes: `Enter` to go, `d` to remove |

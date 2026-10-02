@@ -415,22 +415,35 @@ pub fn ribbon_color(r: Ribbon) -> Color {
 /// it in, a mark at the corner of the running head instead.
 fn draw_ribbon(buf: &mut Buffer, area: Rect, x: u16, w: u16, side: Side, color: Ribbon) {
     let fg = Style::new().fg(ribbon_color(color));
+    let at = ribbon_area(area, x, w, side);
+    if at.height == 1 {
+        buf.set_string(at.x, at.y, "▍", fg);
+        return;
+    }
+    for dy in 0..3 {
+        buf.set_string(at.x, at.y + dy, "██", fg);
+    }
+    buf.set_string(at.x, at.y + 3, "▛▜", fg);
+}
+
+/// Where a page's ribbon hangs, in a pane `area` whose text column starts
+/// at `x` and is `w` wide: two columns by four rows in the margin by the
+/// gutter, or one cell at the head's corner when there is no margin.
+pub fn ribbon_area(area: Rect, x: u16, w: u16, side: Side) -> Rect {
     let rx = match side {
         Side::Right => x.checked_sub(4).filter(|&rx| rx >= area.x),
         Side::Left | Side::Single => Some(x + w + 2).filter(|&rx| rx + 2 <= area.right()),
     };
-    let Some(rx) = rx else {
-        let corner = match side {
-            Side::Right => x,
-            Side::Left | Side::Single => x + w - 1,
-        };
-        buf.set_string(corner, area.y + 1, "▍", fg);
-        return;
-    };
-    for dy in 0..3 {
-        buf.set_string(rx, area.y + dy, "██", fg);
+    match rx {
+        Some(rx) => Rect::new(rx, area.y, 2, 4),
+        None => {
+            let corner = match side {
+                Side::Right => x,
+                Side::Left | Side::Single => x + w.saturating_sub(1),
+            };
+            Rect::new(corner, area.y + 1, 1, 1)
+        }
     }
-    buf.set_string(rx, area.y + 3, "▛▜", fg);
 }
 
 pub fn style_of(t: TextStyle) -> Style {

@@ -55,6 +55,8 @@ enum Mode {
     /// A highlighter marker (the note at this index), clicked on: what to
     /// do with it.
     Marker(usize),
+    /// A bookmark (the one at this index), its ribbon clicked on.
+    Bookmark(usize),
     /// Writing a note on a page or a row, or (`ask`) a question about it
     /// for the agent.
     Writing {
@@ -652,6 +654,10 @@ impl Reader {
             self.marker_key(key, i);
             return false;
         }
+        if let Mode::Bookmark(i) = self.mode {
+            self.bookmark_key(key, i);
+            return false;
+        }
         let Some(cmd) = view::cmd_of(key) else {
             return false;
         };
@@ -665,9 +671,11 @@ impl Reader {
                 self.mode = Mode::Reading;
                 false
             }
-            Mode::Writing { .. } | Mode::Tip { .. } | Mode::Selected { .. } | Mode::Marker(_) => {
-                false
-            }
+            Mode::Writing { .. }
+            | Mode::Tip { .. }
+            | Mode::Selected { .. }
+            | Mode::Marker(_)
+            | Mode::Bookmark(_) => false,
         }
     }
 
@@ -928,7 +936,7 @@ impl Reader {
         // Only while reading or choosing; panels in front take no mouse.
         if !matches!(
             self.mode,
-            Mode::Reading | Mode::Selected { .. } | Mode::Marker(_)
+            Mode::Reading | Mode::Selected { .. } | Mode::Marker(_) | Mode::Bookmark(_)
         ) {
             return;
         }
@@ -936,6 +944,14 @@ impl Reader {
             Side::Right => self.page() + 1,
             Side::Left | Side::Single => self.page(),
         };
+        // A press on the page's ribbon opens its bookmark.
+        if kind == MouseKind::Down
+            && let Some(i) = self.ribbon_at(page, side, size, col, row)
+        {
+            self.dragging = None;
+            self.mode = Mode::Bookmark(i);
+            return;
+        }
         let Some(at) = self.point_at(page, size, col, row) else {
             return;
         };
@@ -1035,6 +1051,62 @@ impl Reader {
             out.extend(chars.iter().take(b.min(chars.len())).skip(a));
         }
         out
+    }
+
+    /// The bookmark whose ribbon is drawn at cell (`col`, `row`) of a pane
+    /// of `size` showing page `n` on `side`.
+    fn ribbon_at(
+        &self,
+        n: usize,
+        side: Side,
+        size: (u16, u16),
+        col: u16,
+        row: u16,
+    ) -> Option<usize> {
+        let i = self
+            .entry
+            .marks
+            .iter()
+            .position(|m| self.layout.page_of(m.at) == n)?;
+        let area = Rect::new(0, 0, size.0, size.1);
+        let (x, w) = view::column(area, self.layout.width);
+        let ribbon = view::ribbon_area(area, x, w, side);
+        // A cell's leeway around so small a target.
+        let hit = Rect::new(
+            ribbon.x.saturating_sub(1),
+            ribbon.y,
+            ribbon.width + 2,
+            ribbon.height + 1,
+        );
+        hit.contains(ratatui::layout::Position::new(col, row))
+            .then_some(i)
+    }
+
+    /// A key on a clicked ribbon: c recolours its bookmark, d takes it out.
+    fn bookmark_key(&mut self, key: &str, i: usize) {
+        let Some(mark) = self.entry.marks.get_mut(i) else {
+            self.mode = Mode::Reading;
+            return;
+        };
+        match key {
+            "c" => {
+                mark.color = mark.color.next();
+                let color = mark.color;
+                self.ribbon = color;
+                if let Err(e) = self.update_settings(|s| s.ribbon = Some(color)) {
+                    self.say(format!("Could not save the setting: {e}"));
+                }
+                self.save();
+            }
+            "d" | "m" | "delete" | "backspace" => {
+                self.entry.marks.remove(i);
+                self.mode = Mode::Reading;
+                self.say("Bookmark removed".into());
+                self.save();
+            }
+            "esc" | "q" | "enter" | "ctrl+c" => self.mode = Mode::Reading,
+            _ => {}
+        }
     }
 
     /// The highlighter marker covering `at`, if any (the last laid wins).
@@ -1307,18 +1379,20 @@ impl Reader {
 
     /// Gives the bookmark on `page` its next colour, which new bookmarks
     /// then take too.
+    /// Failing one there, the bookmark on the other open page.
     fn recolor_mark(&mut self, page: usize) {
-        let open = page..page + 1;
-        let layout = &self.layout;
-        let Some(mark) = self
-            .entry
-            .marks
-            .iter_mut()
-            .find(|m| open.contains(&layout.page_of(m.at)))
-        else {
+        let open = self.open_pages();
+        let page_of = |m: &Mark| self.layout.page_of(m.at);
+        let marks = &self.entry.marks;
+        let i = marks
+            .iter()
+            .position(|m| page_of(m) == page)
+            .or_else(|| marks.iter().position(|m| open.contains(&page_of(m))));
+        let Some(i) = i else {
             self.say("No bookmark here (m to place one)".into());
             return;
         };
+        let mark = &mut self.entry.marks[i];
         mark.color = mark.color.next();
         let color = mark.color;
         self.ribbon = color;
@@ -1393,7 +1467,11 @@ impl Reader {
     fn draw_overlay(&self, f: &mut Frame) {
         if !matches!(
             self.mode,
-            Mode::Reading | Mode::Select(_) | Mode::Selected { .. } | Mode::Marker(_)
+            Mode::Reading
+                | Mode::Select(_)
+                | Mode::Selected { .. }
+                | Mode::Marker(_)
+                | Mode::Bookmark(_)
         ) {
             let area = f.area();
             view::backdrop(f.buffer_mut(), area);
@@ -1406,6 +1484,12 @@ impl Reader {
                 draw_selection(f, &quote);
             }
             Mode::Selected { .. } => {}
+            Mode::Bookmark(i) => {
+                if let Some(m) = self.entry.marks.get(*i) {
+                    let page = self.layout.page_of(m.at) + 1;
+                    draw_bookmark(f, page, &self.row_text(m.at), m.color);
+                }
+            }
             Mode::Marker(i) => {
                 if let Some(note) = self.entry.notes.get(*i)
                     && let Some(end) = note.end
@@ -1599,6 +1683,33 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// What can be done with a clicked ribbon, in a panel at the foot.
+fn draw_bookmark(f: &mut Frame, page: usize, first: &str, color: Ribbon) {
+    let area = f.area();
+    let width = area.width.saturating_sub(4).min(80);
+    let height = view::panel_height(1, 0);
+    let x = area.x + (area.width - width) / 2;
+    let y = area.bottom().saturating_sub(height + 3);
+    let panel = Rect::new(x, y, width, height).intersection(area);
+    let room = view::draw_panel(
+        f.buffer_mut(),
+        panel,
+        "Bookmark",
+        "c colour · d remove · Esc close",
+        0,
+    );
+    let ribbon = Style::new().fg(view::ribbon_color(color));
+    let line = Line::from(vec![
+        Span::styled("██ ", ribbon),
+        Span::raw(format!("p.{page}  {}  ", color.name())),
+        Span::styled(
+            view::fit(first, (room.width as usize).saturating_sub(20)),
+            Style::new().add_modifier(Modifier::DIM),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(line).style(view::panel_style()), room);
+}
+
 /// What can be done with a clicked marker, in a panel at the foot.
 fn draw_marker(f: &mut Frame, quote: &str, note: &str, color: Ribbon) {
     let area = f.area();
@@ -1685,7 +1796,7 @@ const KEYS: &[(&str, &str)] = &[
     ("m", "bookmark this page (again to remove)"),
     ("c", "colour of the bookmark here"),
     ("drag", "choose text: marker, note, ask, copy"),
-    ("click", "a marker: colour, note, remove"),
+    ("click", "a ribbon or marker: colour, remove, ..."),
     ("n", "write a note on this page"),
     ("v", "choose a row: Enter to note it, ? to ask"),
     ("l", "bookmarks and notes (Enter go, d remove)"),
@@ -1734,6 +1845,7 @@ const TIPS: &[&str] = &[
     "`l` lists the bookmarks and notes: `Enter` goes there, `d` removes one.",
     "Drag over text to choose it, then `m` lays a highlighter marker over it.",
     "Click a marker to change its colour (`c`), write a note on it (`n`), or remove it (`d`).",
+    "Click a bookmark's ribbon to change its colour (`c`) or take it out (`d`).",
     "In a spread, `m` bookmarks the page of the pane you press it in.",
     "`g` opens the contents, when the book has chapters.",
     "`a` turns the page-turn animation off, or on again.",
@@ -2136,6 +2248,35 @@ mod tests {
         // A click off any marker opens nothing.
         drag(&mut r, (8, 0), (8, 0));
         assert_eq!(r.mode, Mode::Reading);
+    }
+
+    #[test]
+    fn colour_reaches_the_bookmark_on_the_other_page() {
+        let mut r = reader(&["one", "two", "three"], 1);
+        r.spread = true;
+        r.handle_key("m", true);
+        // Pressed over the left page, which has none: the right page's.
+        r.handle_key("c", false);
+        assert_eq!(r.entry.marks[0].color, Ribbon::Yellow);
+    }
+
+    #[test]
+    fn a_clicked_ribbon_opens_its_bookmark() {
+        let mut r = reader(&["one", "two"], 3);
+        keys(&mut r, &["m"]);
+        // A 40-column pane centres the 20-column text at 10; the ribbon
+        // hangs two columns past its right edge, from the top.
+        let size = (40, 40);
+        r.mouse(Side::Single, size, MouseKind::Down, 33, 2);
+        assert_eq!(r.mode, Mode::Bookmark(0));
+        keys(&mut r, &["c"]);
+        assert_eq!(r.entry.marks[0].color, Ribbon::Yellow);
+        keys(&mut r, &["d"]);
+        assert!(r.entry.marks.is_empty());
+        assert_eq!(r.mode, Mode::Reading);
+        // Off the ribbon, a press is text.
+        r.mouse(Side::Single, size, MouseKind::Down, 33, 2);
+        assert!(matches!(r.mode, Mode::Selected { .. }));
     }
 
     #[test]
