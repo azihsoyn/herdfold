@@ -620,8 +620,10 @@ pub fn style_of(t: TextStyle) -> Style {
     if t.code {
         s = s.fg(Color::Yellow);
     }
-    if let Some(c) = t.color {
-        s = s.fg(Color::Indexed(c));
+    match t.color {
+        Some(crate::doc::Ink::Palette(c)) => s = s.fg(Color::Indexed(c)),
+        Some(crate::doc::Ink::Rgb([r, g, b])) => s = s.fg(Color::Rgb(r, g, b)),
+        None => {}
     }
     if let Some(c) = t.marker {
         s = s.bg(ribbon_color(c)).fg(Color::Black);

@@ -287,7 +287,14 @@ fn shown(key: &str) -> String {
 
 /// `herdfold config check`: says whether the config reads cleanly.
 pub fn check() -> Result<(), crate::cli::CliError> {
-    let (_, problems) = Keymap::load();
+    let (_, mut problems) = Keymap::load();
+    if let Some(theme) = crate::highlight::configured_theme()
+        && !crate::highlight::is_theme(&theme)
+    {
+        problems.push(format!(
+            "highlight.theme: no theme {theme:?}; `herdfold config themes` lists them"
+        ));
+    }
     let path = config_path()
         .map(|p| p.display().to_string())
         .unwrap_or_default();

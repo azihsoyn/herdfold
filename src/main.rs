@@ -65,6 +65,10 @@ struct Cli {
     #[arg(long, overrides_with = "animation")]
     no_animation: bool,
 
+    /// Highlight code with this theme this run [default: as named under `[highlight]` in config.toml, else `ansi`]. `herdfold config themes` lists them.
+    #[arg(long, value_name = "NAME")]
+    theme: Option<String>,
+
     /// The agent `?` asks: a herdr agent name or pane id [default: one in this tab, else in this workspace].
     #[arg(long, value_name = "NAME|PANE")]
     agent: Option<String>,
@@ -98,6 +102,8 @@ enum ConfigCommand {
     Check,
     /// Back up config.toml and remove custom keybindings
     ResetKeys,
+    /// List the themes code can be highlighted with
+    Themes,
 }
 
 #[derive(Subcommand)]
@@ -176,6 +182,16 @@ enum ApiCommand {
 
 fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
+    if let Some(theme) = &cli.theme {
+        if !highlight::is_theme(theme) {
+            let e = cli::CliError::new(
+                "unknown_theme",
+                format!("no theme {theme:?}; `herdfold config themes` lists them"),
+            );
+            return Ok(cli::finish("open", Err(e)));
+        }
+        highlight::use_theme(theme);
+    }
     match cli.command {
         Some(Command::Reader(ReaderCommand::Attach)) => {
             Ok(cli::finish("reader:attach", attach::run()))
@@ -196,6 +212,19 @@ fn main() -> Result<ExitCode> {
         }
         Some(Command::Config(ConfigCommand::Check)) => {
             Ok(cli::finish("config:check", keys::check()))
+        }
+        Some(Command::Config(ConfigCommand::Themes)) => {
+            let reply = serde_json::json!({
+                "id": "cli:config:themes",
+                "result": {
+                    "type": "themes",
+                    "themes": highlight::theme_names(),
+                    "current": highlight::configured_theme()
+                        .unwrap_or_else(|| highlight::DEFAULT_THEME.to_string()),
+                },
+            });
+            println!("{reply}");
+            Ok(ExitCode::SUCCESS)
         }
         Some(Command::Config(ConfigCommand::ResetKeys)) => {
             Ok(cli::finish("config:reset-keys", keys::reset()))

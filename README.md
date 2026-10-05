@@ -34,9 +34,11 @@ on from one to the next. Elsewhere it shows one page at a time.
   Shift_JIS or UTF-8; the headings its notes name are the chapters).
 - **Code is highlighted** by its language, with the grammars bat
   bundles: a Markdown fence's language, an EPUB's `language-…` or
-  `sourceCode …` class, a diff's file extension. The colours are the
-  terminal's own palette, so they suit a light terminal as well as a dark
-  one.
+  `sourceCode …` class, a diff's file extension. The default theme, `ansi`,
+  takes the terminal's own palette, so it suits a light terminal as well
+  as a dark one; bat's other themes (`Monokai Extended`, `OneHalfDark`,
+  `Nord`, ...) are named under `[highlight]` in config.toml, or with
+  `--theme` for one run. `herdfold config themes` lists them.
 - **Japanese is set as it is printed**: punctuation, small kana and
   closing brackets are kept off the start of a row, opening brackets off
   its end, and `……` and `——` stay whole. Ruby (an EPUB's `<ruby>`, Aozora's
@@ -166,6 +168,9 @@ and give a key or a list of keys, by herdr's key names; that action loses its
 defaults, and `""` leaves it unbound:
 
 ```toml
+[highlight]
+theme = "OneHalfDark"
+
 [keys]
 next_page = ["l", "space"]
 previous_page = ["h", "b"]

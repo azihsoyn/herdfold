@@ -1,4 +1,4 @@
-use crate::doc::{Chapter, Document, Kind, Line, Run, Style};
+use crate::doc::{Chapter, Document, Ink, Kind, Line, Run, Style};
 use crate::highlight::Highlighter;
 
 /// A diff is kept exactly as written. The only structure taken from it is
@@ -90,7 +90,7 @@ const CYAN: u8 = 6;
 
 fn palette(c: u8) -> Style {
     Style {
-        color: Some(c),
+        color: Some(Ink::Palette(c)),
         ..Style::default()
     }
 }
@@ -134,15 +134,20 @@ mod tests {
             "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-fn old() {}\n+fn new() {}\ndiff --git a/n.zzz b/n.zzz\n@@ -1 +1 @@\n+plain\n",
         );
         assert!(d.lines[1].style.dim, "file headers are quiet");
-        assert_eq!(d.lines[3].style.color, Some(CYAN));
+        assert_eq!(d.lines[3].style.color, Some(Ink::Palette(CYAN)));
         let (removed, added) = (&d.lines[4], &d.lines[5]);
-        assert_eq!(removed.style_at(0).color, Some(RED));
-        assert_eq!(added.style_at(0).color, Some(GREEN));
+        assert_eq!(removed.style_at(0).color, Some(Ink::Palette(RED)));
+        assert_eq!(added.style_at(0).color, Some(Ink::Palette(GREEN)));
         assert!(removed.style.dim && !added.style.dim);
         // `fn` is highlighted as Rust, in some colour other than the sign's.
-        assert!(added.style_at(1).color.is_some_and(|c| c != GREEN));
+        assert!(
+            added
+                .style_at(1)
+                .color
+                .is_some_and(|c| c != Ink::Palette(GREEN))
+        );
         // A file of no known language: the whole line in its colour.
         let plain = d.lines.last().unwrap();
-        assert_eq!(plain.style.color, Some(GREEN));
+        assert_eq!(plain.style.color, Some(Ink::Palette(GREEN)));
     }
 }

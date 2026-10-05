@@ -1,6 +1,8 @@
-//! Code highlighted by its language, as bat highlights it: the grammars bat
-//! bundles, and bat's `ansi` theme, whose colours are the terminal's own
-//! palette, so highlighted code suits a light terminal as well as a dark one.
+//! Code highlighted by its language, as bat highlights it: the grammars and
+//! themes bat bundles. The theme is `ansi` unless one is named under
+//! `[highlight]` in config.toml (or with `--theme`); `ansi` takes its colours
+//! from the terminal's own palette, so it suits a light terminal as well as
+//! a dark one.
 
 use std::sync::OnceLock;
 
@@ -8,7 +10,46 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Theme};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 
-use crate::doc::{Run, Style};
+use crate::doc::{Ink, Run, Style};
+
+/// The theme used unless another is named.
+pub const DEFAULT_THEME: &str = "ansi";
+
+/// The theme named for this run (`--theme`), over the one in config.toml.
+static ASKED: OnceLock<String> = OnceLock::new();
+
+/// Names the theme for this run.
+pub fn use_theme(name: &str) {
+    let _ = ASKED.set(name.to_string());
+}
+
+/// The names of the themes there are.
+pub fn theme_names() -> Vec<&'static str> {
+    two_face::theme::EmbeddedLazyThemeSet::theme_names()
+        .iter()
+        .map(|t| t.as_name())
+        .collect()
+}
+
+/// The theme called `name` (case aside), if there is one.
+fn find_theme(name: &str) -> Option<two_face::theme::EmbeddedThemeName> {
+    two_face::theme::EmbeddedLazyThemeSet::theme_names()
+        .iter()
+        .copied()
+        .find(|t| t.as_name().eq_ignore_ascii_case(name.trim()))
+}
+
+/// The theme named in config.toml's `[highlight]` table, if any.
+pub fn configured_theme() -> Option<String> {
+    let text = std::fs::read_to_string(crate::keys::config_path()?).ok()?;
+    let table: toml::Table = text.parse().ok()?;
+    Some(table.get("highlight")?.get("theme")?.as_str()?.to_string())
+}
+
+/// Whether `name` is a theme there is.
+pub fn is_theme(name: &str) -> bool {
+    find_theme(name).is_some()
+}
 
 fn syntaxes() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
@@ -18,9 +59,13 @@ fn syntaxes() -> &'static SyntaxSet {
 fn theme() -> &'static Theme {
     static THEME: OnceLock<Theme> = OnceLock::new();
     THEME.get_or_init(|| {
-        two_face::theme::extra()
-            .get(two_face::theme::EmbeddedThemeName::Ansi)
-            .clone()
+        let name = ASKED
+            .get()
+            .cloned()
+            .or_else(configured_theme)
+            .and_then(|n| find_theme(&n))
+            .unwrap_or(two_face::theme::EmbeddedThemeName::Ansi);
+        two_face::theme::extra().get(name).clone()
     })
 }
 
@@ -86,10 +131,15 @@ impl Highlighter {
     }
 }
 
-/// The palette colour bat's `ansi` theme means by `c`: alpha 0 names a
-/// palette entry in the red channel; alpha 1, the terminal's own text colour.
-fn palette(c: syntect::highlighting::Color) -> Option<u8> {
-    (c.a == 0).then_some(c.r)
+/// The colour a theme means by `c`. bat's palette themes say alpha 0 for
+/// a palette entry, named in the red channel, and alpha 1 for the
+/// terminal's own text colour; any other is an exact colour.
+fn palette(c: syntect::highlighting::Color) -> Option<Ink> {
+    match c.a {
+        0 => Some(Ink::Palette(c.r)),
+        1 => None,
+        _ => Some(Ink::Rgb([c.r, c.g, c.b])),
+    }
 }
 
 #[cfg(test)]
@@ -101,7 +151,11 @@ mod tests {
         let mut h = Highlighter::new("rust").unwrap();
         let runs = h.line("fn main() { let s = \"hi\"; }");
         assert!(!runs.is_empty());
-        assert!(runs.iter().all(|r| r.style.color.is_none_or(|c| c < 16)));
+        assert!(runs.iter().all(|r| {
+            r.style
+                .color
+                .is_none_or(|c| matches!(c, Ink::Palette(0..16)))
+        }));
         // `fn` and the string are coloured differently.
         let at = |i: usize| {
             runs.iter()
@@ -109,6 +163,13 @@ mod tests {
                 .and_then(|r| r.style.color)
         };
         assert!(at(0).is_some() && at(21).is_some() && at(0) != at(21));
+    }
+
+    #[test]
+    fn themes_are_found_by_name() {
+        assert!(is_theme("ansi") && is_theme("Monokai Extended") && is_theme("nord"));
+        assert!(!is_theme("no such theme"));
+        assert!(theme_names().contains(&"OneHalfDark"));
     }
 
     #[test]
