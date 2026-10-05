@@ -46,6 +46,11 @@ on from one to the next. Elsewhere it shows one page at a time.
   for pages that run right to left, as Japanese books and manga do: the
   right page comes first, turns sweep the other way, and the arrows follow.
   An EPUB that declares `page-progression-direction="rtl"` opens that way.
+- **Vertical writing** (`V`, kept per book): the rows become columns
+  read downward, the first on the right, as Japanese is printed; the pages
+  then run right to left too. Punctuation and brackets turn upright
+  (︒︑﹁﹂︵︶︙), and digits and Latin letters go two to a cell. Pictures
+  are only set across.
 - **The contents** (`g`) open as a drawer down the side, the chapter you
   are in pointed at; `←` / `→` fold and unfold sections. `Backspace`
   goes back to the page you jumped from, from there or from the list or
@@ -142,6 +147,7 @@ book as a note (`✦`) by running `herdfold note add`.
 | `<` / `>` | shorter / longer rows |
 | `a` | page-turn animation on / off |
 | `D` | pages run left to right / right to left |
+| `V` | set in vertical columns / across |
 | `h` | list the keys |
 | `T` | a tip (one greets each book until you tick "don't show again") |
 | `q` / `Esc` | close the book |
@@ -163,7 +169,7 @@ ask = "A"
 
 The actions: `next_page` `previous_page` `contents` `go_back` `follow_link` `search` `bookmark`
 `bookmark_color` `note` `choose_row` `list` `note_display` `ask`
-`shorter_rows` `longer_rows` `animation` `direction` `help` `tip` `up` `down`
+`shorter_rows` `longer_rows` `animation` `direction` `vertical` `help` `tip` `up` `down`
 `enter` `remove` `back` `quit`. `herdfold config check` reports what is wrong
 with the file; `herdfold config reset-keys` backs it up and removes `[keys]`.
 The key list (`h`) and the tips show the keys as bound.

@@ -32,6 +32,88 @@ pub const MEASURE_STEP: usize = 4;
 
 /// The text area a pane of `width` x `height` leaves after margins, with
 /// rows no longer than `measure`.
+/// Cells a vertical column takes across: two for the characters, one gap.
+pub const COLUMN_STRIDE: usize = 3;
+
+/// Longest vertical column, in characters, as a printed page holds.
+const COLUMN_MAX: usize = 42;
+
+/// The size to set vertical text to in a pane of `width` x `height`: the
+/// row length (columns' characters at two cells each) and the rows (columns)
+/// a page holds, the page no wider than `measure`.
+pub fn vertical_size(width: u16, height: u16, measure: usize) -> (usize, usize) {
+    let across = (width.saturating_sub(2 * SIDE) as usize).clamp(1, measure.max(1));
+    let columns = (across + 1) / COLUMN_STRIDE;
+    let down = (height.saturating_sub(TOP + BOTTOM) as usize).clamp(1, COLUMN_MAX);
+    (down * 2, columns.max(1))
+}
+
+/// The vertical form of `c`, for punctuation and brackets that turn.
+pub fn upright(c: char) -> char {
+    match c {
+        '、' => '︑',
+        '。' => '︒',
+        '，' => '︐',
+        '：' => '︓',
+        '；' => '︔',
+        '！' => '︕',
+        '？' => '︖',
+        '「' => '﹁',
+        '」' => '﹂',
+        '『' => '﹃',
+        '』' => '﹄',
+        '（' => '︵',
+        '）' => '︶',
+        '｛' => '︷',
+        '｝' => '︸',
+        '〔' => '︹',
+        '〕' => '︺',
+        '【' => '︻',
+        '】' => '︼',
+        '《' => '︽',
+        '》' => '︾',
+        '〈' => '︿',
+        '〉' => '﹀',
+        '［' => '﹇',
+        '］' => '﹈',
+        '…' => '︙',
+        '‥' => '︰',
+        'ー' => '丨',
+        '—' | '―' => '︱',
+        '－' => '︲',
+        '〜' | '～' => '≀',
+        c => c,
+    }
+}
+
+/// The cells of a vertical column, top down: the character indexes each
+/// holds. A wide character has a cell to itself; narrow ones (digits,
+/// Latin) go two to a cell, side by side.
+pub fn column_cells(text: &str) -> Vec<std::ops::Range<usize>> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut cells = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let narrow = |c: char| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) < 2;
+        let n = if narrow(chars[i]) && chars.get(i + 1).is_some_and(|&c| narrow(c)) {
+            2
+        } else {
+            1
+        };
+        cells.push(i..i + n);
+        i += n;
+    }
+    cells
+}
+
+/// The left edge of vertical column `i` (counted from the right) in a
+/// column of text at `x`, `w` wide.
+pub fn column_x(x: u16, w: u16, i: usize) -> Option<u16> {
+    (x + w)
+        .checked_sub(2 + (i * COLUMN_STRIDE) as u16)
+        .filter(|&c| c >= x)
+}
+
 pub fn text_size(width: u16, height: u16, measure: usize) -> (usize, usize) {
     let w = (width.saturating_sub(2 * SIDE) as usize).clamp(1, measure.max(1));
     let h = height.saturating_sub(TOP + BOTTOM).max(1) as usize;
@@ -75,6 +157,9 @@ pub struct PageView {
     /// (from the reading log's pace) of the book.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remaining: Option<String>,
+    /// Set in vertical columns, right to left, each row a column.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub vertical: bool,
 }
 
 /// A note shown in the margin, from row `row` (counted as in `rows`) down.
@@ -150,6 +235,8 @@ pub enum Cmd {
     Tip,
     /// Search the book.
     Search,
+    /// Set the book in vertical columns, or across again.
+    Vertical,
     /// Remove the bookmark or note chosen in the list.
     Delete,
     /// Go back to where the last jump left from.
@@ -241,6 +328,69 @@ pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
     Paragraph::new(line).render(Rect::new(x, area.y + 1, w, 1), buf);
 
     let text_h = area.height - TOP - BOTTOM;
+    if v.vertical {
+        render_columns(buf, area, x, w, text_h, v);
+    } else {
+        render_rows(buf, area, x, w, text_h, v);
+    }
+    if let Some(text) = &v.status {
+        draw_snackbar(buf, area, text);
+    }
+    if let Some(color) = v.ribbon {
+        draw_ribbon(buf, area, x, w, v.side, color);
+    }
+    let footer = footer(v, w as usize);
+    Paragraph::new(footer).render(Rect::new(x, area.y + area.height - 2, w, 1), buf);
+}
+
+/// The rows set as vertical columns, the first on the right.
+fn render_columns(buf: &mut Buffer, area: Rect, x: u16, w: u16, text_h: u16, v: &PageView) {
+    for (i, r) in v.rows.iter().enumerate() {
+        let Some(cx) = column_x(x, w, i) else {
+            break;
+        };
+        // Each character with its style, in reading order.
+        let chars: Vec<(char, Style)> = r
+            .spans
+            .iter()
+            .flat_map(|s| {
+                let style = style_of(s.style);
+                s.text.chars().map(move |c| (c, style))
+            })
+            .collect();
+        let text: String = chars.iter().map(|(c, _)| *c).collect();
+        for (k, cell) in column_cells(&text)
+            .into_iter()
+            .enumerate()
+            .take(text_h as usize)
+        {
+            let y = area.y + TOP + k as u16;
+            for (n, j) in cell.enumerate() {
+                let (c, mut style) = chars[j];
+                if r.selected {
+                    style = style.add_modifier(Modifier::REVERSED);
+                }
+                buf.set_string(cx + n as u16, y, upright(c).to_string(), style);
+            }
+        }
+        if r.selected {
+            for k in 0..text_h {
+                let cell = &mut buf[(cx, area.y + TOP + k)];
+                cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+            }
+        }
+        // Above its column: the find being shown, or a noted row.
+        let above = area.y + TOP - 1;
+        if r.pointer {
+            buf.set_string(cx, above, "▼", Style::new().fg(CURRENT_FIND));
+        } else if r.marker {
+            buf.set_string(cx, above, "▁", Style::new().fg(Color::Yellow));
+        }
+    }
+}
+
+/// The rows set across, as most text is.
+fn render_rows(buf: &mut Buffer, area: Rect, x: u16, w: u16, text_h: u16, v: &PageView) {
     let lines: Vec<Line> = v
         .rows
         .iter()
@@ -263,12 +413,6 @@ pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
     Paragraph::new(lines).render(Rect::new(x, area.y + TOP, w, text_h), buf);
 
     draw_margin_notes(buf, area, x, w, text_h, v);
-    if let Some(text) = &v.status {
-        draw_snackbar(buf, area, text);
-    }
-    if let Some(color) = v.ribbon {
-        draw_ribbon(buf, area, x, w, v.side, color);
-    }
 
     // A row with a note gets a mark in the margin, like a highlighter's
     // stroke; the row of the find being shown, a pointer.
@@ -282,9 +426,6 @@ pub fn render(buf: &mut Buffer, area: Rect, view: Option<&PageView>) {
             }
         }
     }
-
-    let footer = footer(v, w as usize);
-    Paragraph::new(footer).render(Rect::new(x, area.y + area.height - 2, w, 1), buf);
 }
 
 /// Sets margin notes in the outer margin, each from its row down, below the
