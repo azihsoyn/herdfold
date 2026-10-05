@@ -307,5 +307,17 @@ mod tests {
             text,
             "━━━───────  30%  p.30 / 100 · in “Two” · 1 h · 2 notes"
         );
+        let finished = Shelved {
+            finished: Some("2026-10-05T12:00:00Z".into()),
+            ..b
+        };
+        let text: String = detail(&finished, 80)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            text.starts_with("━━━━━━━━━━ 100%  ✓ finished 2026-10-05 · p.30 / 100"),
+            "{text}"
+        );
     }
 }
