@@ -71,6 +71,10 @@ pub enum Event {
         at: Place,
         question: String,
     },
+    /// The last page was reached.
+    Finished {
+        at: Place,
+    },
     /// The book was closed; the last record of a session that ended well.
     SessionEnded {
         at: Place,
@@ -133,6 +137,8 @@ pub struct Log {
     pages: BTreeSet<usize>,
     /// The last place recorded as shown.
     last: Option<Pos>,
+    /// Whether the last page has been reached this session.
+    finished: bool,
 }
 
 impl Log {
@@ -145,16 +151,19 @@ impl Log {
             started: Instant::now(),
             pages: BTreeSet::new(),
             last: None,
+            finished: false,
         }
     }
 
-    /// Notes that `at` is open; the first time, the session starts.
-    pub fn shown(&mut self, at: Place) {
+    /// Notes that `at` is open, and whether the book's last page is (in a
+    /// spread, it may face `at`); the first time, the session starts.
+    pub fn shown(&mut self, at: Place, at_end: bool) {
         if self.last == Some(at.pos()) {
             return;
         }
         self.last = Some(at.pos());
         self.pages.insert(at.page);
+        let last_page = at_end && !self.finished;
         if self.file.is_none() {
             self.file = dir().and_then(|d| {
                 fs::create_dir_all(&d).ok()?;
@@ -163,11 +172,15 @@ impl Log {
             let book = self.book.clone();
             self.record(Event::SessionStarted {
                 book,
-                at,
+                at: at.clone(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             });
         } else {
-            self.record(Event::PageShown { at });
+            self.record(Event::PageShown { at: at.clone() });
+        }
+        if last_page {
+            self.finished = true;
+            self.record(Event::Finished { at });
         }
     }
 
@@ -288,6 +301,8 @@ pub struct Summary {
     pub bookmarks: usize,
     pub searches: usize,
     pub questions: usize,
+    /// Whether the last page was reached.
+    pub finished: bool,
 }
 
 pub fn summarize(records: &[Record]) -> Option<Summary> {
@@ -309,6 +324,7 @@ pub fn summarize(records: &[Record]) -> Option<Summary> {
         bookmarks: 0,
         searches: 0,
         questions: 0,
+        finished: false,
     };
     let mut pages = BTreeSet::from([at.page]);
     for r in records {
@@ -324,6 +340,7 @@ pub fn summarize(records: &[Record]) -> Option<Summary> {
             Event::NoteAdded { .. } => s.notes += 1,
             Event::Searched { .. } => s.searches += 1,
             Event::Asked { .. } => s.questions += 1,
+            Event::Finished { .. } => s.finished = true,
             Event::SessionEnded {
                 at,
                 pages_read,
@@ -636,6 +653,7 @@ mod tests {
             rec("4", Event::PageShown { at: place(5) }),
         ];
         let s = summarize(&records).unwrap();
+        assert!(!s.finished);
         assert_eq!((s.from.page, s.to.page, s.pages_read), (3, 5, 3));
         assert_eq!((s.notes, s.closed, s.ended.as_str()), (1, false, "4"));
     }

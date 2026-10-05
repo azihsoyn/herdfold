@@ -360,8 +360,9 @@ impl Reader {
                 }
             ) {
                 let at = self.place(self.entry.at);
+                let at_end = self.page() + self.step() >= self.layout.page_count();
                 if let Some(log) = &mut self.log {
-                    log.shown(at);
+                    log.shown(at, at_end);
                 }
             }
 

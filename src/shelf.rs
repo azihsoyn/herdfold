@@ -35,6 +35,8 @@ pub struct Shelved {
     pub seconds: u64,
     pub notes: usize,
     pub bookmarks: usize,
+    /// When the last page was first reached.
+    pub finished: Option<String>,
 }
 
 /// Every book read, from the reading log and the bookmarks file, the one
@@ -54,6 +56,7 @@ pub fn books() -> Vec<Shelved> {
                 seconds: 0,
                 notes: e.notes.len(),
                 bookmarks: e.marks.len(),
+                finished: None,
             },
         );
     }
@@ -70,7 +73,11 @@ pub fn books() -> Vec<Shelved> {
             seconds: 0,
             notes: 0,
             bookmarks: 0,
+            finished: None,
         });
+        if s.finished && b.finished.as_ref().is_none_or(|t| *t > s.ended) {
+            b.finished = Some(s.ended.clone());
+        }
         b.format = b.format.or(Some(s.book.format));
         b.seconds += s.seconds.unwrap_or(0);
         if b.last_read.as_ref().is_none_or(|t| *t <= s.ended) {
@@ -201,6 +208,9 @@ fn detail(b: &Shelved, width: usize) -> Vec<Span<'static>> {
         1 => parts.push("1 note".into()),
         n => parts.push(format!("{n} notes")),
     }
+    if let Some(t) = &b.finished {
+        parts.insert(0, format!("✓ finished {}", t.get(..10).unwrap_or(t)));
+    }
     if b.format.is_none() {
         parts.push("format not kept".into());
     }
@@ -249,6 +259,7 @@ mod tests {
             seconds: 3600,
             notes: 2,
             bookmarks: 0,
+            finished: None,
         };
         let text: String = detail(&b, 80).iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(

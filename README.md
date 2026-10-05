@@ -102,7 +102,8 @@ Outside herdr, and for pictures on the web, their description is shown.
 Each sitting with a book is a session, kept as a JSON Lines file of its
 own in `~/.local/share/herdfold/sessions/` (`$XDG_DATA_HOME` if set): when
 the book was opened and closed, the pages shown, bookmarks, notes and
-markers, searches and questions, one record a line.
+markers, searches and questions, and reaching the last page, one record
+a line. The shelf marks the books finished, and when.
 
 ```sh
 herdfold log list [--book FILE]     # sessions, newest first, summed up
