@@ -338,6 +338,82 @@ pub fn summarize(records: &[Record]) -> Option<Summary> {
     Some(s)
 }
 
+/// Seconds a page usually takes to read: the median time between turns to
+/// the next page, from this book's sessions if there are enough, else from
+/// every book's. Turns after a long pause (the book left open) do not count.
+pub fn pace(book: Option<&str>) -> Option<f64> {
+    const LONGEST: f64 = 600.0;
+    const ENOUGH: usize = 10;
+    let all = sessions();
+    let samples = |only: Option<&str>| {
+        let mut out = Vec::new();
+        for records in &all {
+            let of_book =
+                summarize(records).is_some_and(|s| only.is_none() || s.book.key.as_deref() == only);
+            if !of_book {
+                continue;
+            }
+            let mut last: Option<(usize, f64)> = None;
+            for r in records {
+                let (Event::PageShown { at } | Event::SessionStarted { at, .. }) = &r.event else {
+                    continue;
+                };
+                let Some(t) = seconds_of(&r.time) else {
+                    continue;
+                };
+                if let Some((page, then)) = last
+                    && (1..=2).contains(&at.page.saturating_sub(page))
+                    && at.page > page
+                {
+                    let each = (t - then) / (at.page - page) as f64;
+                    if each > 0.0 && each <= LONGEST {
+                        out.push(each);
+                    }
+                }
+                last = Some((at.page, t));
+            }
+        }
+        out
+    };
+    let mut s = samples(book);
+    if s.len() < ENOUGH {
+        s = samples(None);
+    }
+    if s.len() < ENOUGH {
+        return None;
+    }
+    s.sort_by(f64::total_cmp);
+    Some(s[s.len() / 2])
+}
+
+/// Seconds since 1970 of an RFC 3339 time in UTC, as `rfc3339` writes them.
+fn seconds_of(time: &str) -> Option<f64> {
+    let n = |r: std::ops::Range<usize>| time.get(r)?.parse::<i64>().ok();
+    let (y, m, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
+    let (hh, mm, ss) = (n(11..13)?, n(14..16)?, n(17..19)?);
+    // A civil date to days since 1970-01-01 (Howard Hinnant's algorithm).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some((days * 86_400 + hh * 3600 + mm * 60 + ss) as f64)
+}
+
+/// A rough length of time, as a reader would say it.
+pub fn duration(seconds: f64) -> String {
+    let minutes = (seconds / 60.0).round() as u64;
+    match minutes {
+        0 => "under a minute".to_string(),
+        m if m < 60 => format!("about {m} min"),
+        m => match m % 60 {
+            0 => format!("about {} h", m / 60),
+            r => format!("about {} h {r} min", m / 60),
+        },
+    }
+}
+
 fn print(id: &str, result: serde_json::Value) {
     println!(
         "{}",
@@ -491,6 +567,16 @@ mod tests {
         let t = UNIX_EPOCH + std::time::Duration::from_secs(1_791_201_600);
         assert_eq!(rfc3339(t), "2026-10-05T12:00:00Z");
         assert_eq!(rfc3339(UNIX_EPOCH), "1970-01-01T00:00:00Z");
+        assert_eq!(seconds_of("2026-10-05T12:00:00Z"), Some(1_791_201_600.0));
+        assert_eq!(seconds_of("2024-02-29T00:00:01Z"), Some(1_709_164_801.0));
+    }
+
+    #[test]
+    fn durations_read_as_spoken() {
+        assert_eq!(duration(20.0), "under a minute");
+        assert_eq!(duration(20.0 * 60.0), "about 20 min");
+        assert_eq!(duration(80.0 * 60.0), "about 1 h 20 min");
+        assert_eq!(duration(120.0 * 60.0), "about 2 h");
     }
 
     #[test]

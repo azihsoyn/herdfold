@@ -71,6 +71,10 @@ pub struct PageView {
     /// Pictures to set over the rows left for them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pictures: Vec<crate::pictures::PagePicture>,
+    /// How much is left, beside the page number: of the chapter, and
+    /// (from the reading log's pace) of the book.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<String>,
 }
 
 /// A note shown in the margin, from row `row` (counted as in `rows`) down.
@@ -489,6 +493,9 @@ pub fn style_of(t: TextStyle) -> Style {
     s
 }
 
+/// Shortest progress bar worth drawing beside what is left.
+const MIN_BAR: usize = 8;
+
 /// `12  ━━━━━━──────` on a left page, `━━━━━━──────  13 / 240` otherwise,
 /// so page numbers sit on the outer edges of the spread.
 fn footer(v: &PageView, width: usize) -> Line<'static> {
@@ -497,13 +504,22 @@ fn footer(v: &PageView, width: usize) -> Line<'static> {
         Side::Left => format!("{}  ", v.number),
         Side::Right | Side::Single => format!("  {} / {}", v.number, v.total),
     };
-    let bar = width.saturating_sub(label.width());
+    // What is left goes before the number, while the bar keeps some length.
+    let left = v
+        .remaining
+        .as_deref()
+        .map(|r| format!("  {r}"))
+        .filter(|r| width >= label.width() + r.width() + MIN_BAR)
+        .unwrap_or_default();
+    let bar = width.saturating_sub(label.width() + left.width());
     let filled = (bar * v.number).div_ceil(v.total.max(1)).min(bar);
     let full = Span::raw("━".repeat(filled));
     let rest = Span::styled("─".repeat(bar - filled), dim);
     match v.side {
         Side::Left => Line::from(vec![Span::raw(label), full, rest]),
-        Side::Right | Side::Single => Line::from(vec![full, rest, Span::raw(label)]),
+        Side::Right | Side::Single => {
+            Line::from(vec![full, rest, Span::styled(left, dim), Span::raw(label)])
+        }
     }
 }
 

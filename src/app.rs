@@ -158,6 +158,8 @@ struct Reader {
     trail: Vec<Pos>,
     /// The reading log of this session; none under test.
     log: Option<crate::log::Log>,
+    /// Seconds a page usually takes, from the reading log.
+    pace: Option<f64>,
     /// Where this reader's socket is, for an agent to write notes back.
     socket: Option<PathBuf>,
     /// Outcomes of work done off the main loop (asking the agent).
@@ -238,6 +240,7 @@ pub fn run(doc: Document, book: Option<String>, opening: Opening) -> Result<()> 
             .and_then(|pane| herdr::cell_size(&pane)),
         folded: Default::default(),
         trail: Vec::new(),
+        pace: crate::log::pace(log_book.key.as_deref()),
         log: Some(crate::log::Log::new(log_book)),
         chapter_pages: Vec::new(),
         spread: false,
@@ -603,7 +606,43 @@ impl Reader {
         p..(p + self.step()).min(self.layout.page_count())
     }
 
+    /// The open pages, what is left shown beside the last one's number.
     fn views(&self) -> (PageView, Option<PageView>) {
+        let (mut left, mut right) = self.open_views();
+        let remaining = self.remaining();
+        match &mut right {
+            Some(r) => r.remaining = remaining,
+            None if left.side == Side::Single => left.remaining = remaining,
+            None => {}
+        }
+        (left, right)
+    }
+
+    /// What is left: pages to the next chapter, and the time to the end of
+    /// the book at the pace pages have been turned.
+    fn remaining(&self) -> Option<String> {
+        let count = self.layout.page_count();
+        let last_open = (self.page() + self.step()).min(count).saturating_sub(1);
+        let to_chapter = self
+            .chapter_pages
+            .iter()
+            .find(|&&p| p > last_open)
+            .map(|&p| p - last_open - 1)
+            .filter(|&n| n > 0)
+            .map(|n| match n {
+                1 => "1 page left in chapter".to_string(),
+                n => format!("{n} pages left in chapter"),
+            });
+        let rest = count.saturating_sub(last_open + 1);
+        let to_end = self
+            .pace
+            .filter(|_| rest > 0)
+            .map(|pace| crate::log::duration(rest as f64 * pace) + " to the end");
+        let parts: Vec<String> = to_chapter.into_iter().chain(to_end).collect();
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+
+    fn open_views(&self) -> (PageView, Option<PageView>) {
         let p = self.page();
         if !self.spread {
             return (self.view(p, Side::Single), None);
@@ -636,6 +675,7 @@ impl Reader {
             status: None,
             margin_notes: Vec::new(),
             pictures: Vec::new(),
+            remaining: None,
         }
     }
 
@@ -828,6 +868,7 @@ impl Reader {
             width: self.layout.width,
             // The snackbar sits at the bottom right of the book.
             status: (side != Side::Left).then(|| self.toast()).flatten(),
+            remaining: None,
             margin_notes,
             pictures,
         }
@@ -2870,6 +2911,7 @@ mod tests {
             folded: Default::default(),
             trail: Vec::new(),
             log: None,
+            pace: None,
             socket: None,
             background: mpsc::channel(),
         };
@@ -3248,6 +3290,33 @@ mod tests {
         assert_eq!((r.page(), &r.mode), (3, &Mode::Reading));
         keys(&mut r, &["backspace"]);
         assert_eq!(r.page(), 0);
+    }
+
+    #[test]
+    fn what_is_left_is_shown_beside_the_number() {
+        let mut r = reader(&["a", "b", "c", "d", "e"], 1);
+        r.chapter_pages = vec![0, 3];
+        r.doc.chapters = [("One", 0), ("Two", 3)]
+            .map(|(title, line)| crate::doc::Chapter {
+                title: title.into(),
+                level: 1,
+                line,
+            })
+            .to_vec();
+        assert_eq!(
+            r.views().0.remaining.as_deref(),
+            Some("2 pages left in chapter")
+        );
+        r.pace = Some(90.0);
+        keys(&mut r, &["space", "space"]);
+        assert_eq!(
+            r.views().0.remaining.as_deref(),
+            Some("about 3 min to the end")
+        );
+        r.spread = true;
+        let (left, right) = r.views();
+        assert_eq!(left.remaining, None, "only beside the last open page");
+        assert!(right.unwrap().remaining.is_some());
     }
 
     #[test]

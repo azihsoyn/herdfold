@@ -48,6 +48,9 @@ on from one to the next. Elsewhere it shows one page at a time.
   (`[see](#the-heading)`) count, as do an EPUB's links between its pages.
 - **Search** (`/` or `Ctrl-F`) finds as you type; `n` / `N` step through
   the finds, `l` lists them with the words around each.
+- **What is left** sits beside the page number: the pages to the end of
+  the chapter, and, once the reading log has seen you turn enough pages,
+  about how long the rest of the book will take at your pace.
 - **Your place is kept** per book, as a position in the text rather than a
   page number, so it survives a change of pane size.
 
