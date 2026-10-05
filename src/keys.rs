@@ -26,6 +26,12 @@ pub const ACTIONS: &[(Cmd, &str, &[&str], &str)] = &[
     ),
     (Cmd::Contents, "contents", &["g"], "contents"),
     (
+        Cmd::Return,
+        "go_back",
+        &["backspace", "ctrl+o"],
+        "back to where the last jump left from",
+    ),
+    (
         Cmd::Search,
         "search",
         &["/", "ctrl+f"],

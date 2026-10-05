@@ -38,7 +38,9 @@ on from one to the next. Elsewhere it shows one page at a time.
   right page comes first, turns sweep the other way, and the arrows follow.
   An EPUB that declares `page-progression-direction="rtl"` opens that way.
 - **The contents** (`g`) open as a drawer down the side, the chapter you
-  are in pointed at; `←` / `→` fold and unfold sections.
+  are in pointed at; `←` / `→` fold and unfold sections. `Backspace`
+  goes back to the page you jumped from, from there or from the list or
+  a search.
 - **Search** (`/` or `Ctrl-F`) finds as you type; `n` / `N` step through
   the finds, `l` lists them with the words around each.
 - **Your place is kept** per book, as a position in the text rather than a
@@ -82,6 +84,7 @@ book as a note (`✦`) by running `herdfold note add`.
 | `Space` / `→` | turn the page (`←` when the book runs right to left) |
 | `b` / `←` | turn back |
 | `g` | contents |
+| `Backspace` / `Ctrl-O` | back to where the last jump (contents, list, search) left from |
 | `/` or `Ctrl-F` | search |
 | `m` | bookmark the page (again to remove) |
 | `c` | colour of the bookmark here |
@@ -114,7 +117,7 @@ help = "?"
 ask = "A"
 ```
 
-The actions: `next_page` `previous_page` `contents` `search` `bookmark`
+The actions: `next_page` `previous_page` `contents` `go_back` `search` `bookmark`
 `bookmark_color` `note` `choose_row` `list` `note_display` `ask`
 `shorter_rows` `longer_rows` `animation` `direction` `help` `tip` `up` `down`
 `enter` `remove` `back` `quit`. `herdfold config check` reports what is wrong

@@ -148,6 +148,8 @@ pub enum Cmd {
     Search,
     /// Remove the bookmark or note chosen in the list.
     Delete,
+    /// Go back to where the last jump left from.
+    Return,
 }
 
 /// A key press under herdr's key names (`space`, `esc`, `ctrl+c`, `b`, ...),

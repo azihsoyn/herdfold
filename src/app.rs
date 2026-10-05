@@ -148,6 +148,8 @@ struct Reader {
     cell: Option<(u32, u32)>,
     /// Chapters folded shut in the contents, their sections hidden.
     folded: std::collections::BTreeSet<usize>,
+    /// Places left by jumps (contents, list, search), the latest last.
+    trail: Vec<Pos>,
     /// Where this reader's socket is, for an agent to write notes back.
     socket: Option<PathBuf>,
     /// Outcomes of work done off the main loop (asking the agent).
@@ -207,6 +209,7 @@ pub fn run(
             .ok()
             .and_then(|pane| herdr::cell_size(&pane)),
         folded: Default::default(),
+        trail: Vec::new(),
         chapter_pages: Vec::new(),
         spread: false,
         mode: Mode::Reading,
@@ -981,6 +984,15 @@ impl Reader {
             },
             // Esc steps back out of whatever is open; here, the book.
             Cmd::Quit | Cmd::Back => return true,
+            Cmd::Return => match self.trail.pop() {
+                Some(at) => {
+                    self.entry.at = at;
+                    self.save();
+                    let page = self.layout.page_of(at);
+                    self.say(format!("Back to p.{}", page + 1));
+                }
+                None => self.say("Nowhere to go back to".into()),
+            },
             Cmd::Up | Cmd::Down | Cmd::Enter | Cmd::Delete => {}
         }
         false
@@ -1032,7 +1044,7 @@ impl Reader {
             Cmd::Enter => {
                 self.mode = Mode::Reading;
                 if let Some(&p) = self.chapter_pages.get(sel) {
-                    self.go(p);
+                    self.jump(p);
                 }
             }
             Cmd::Quit => return true,
@@ -1050,7 +1062,7 @@ impl Reader {
                 self.mode = Mode::Reading;
                 if let Some(s) = shelf.get(sel) {
                     let p = self.layout.page_of(s.at);
-                    self.go(p);
+                    self.jump(p);
                 }
             }
             Cmd::Delete => {
@@ -1380,7 +1392,13 @@ impl Reader {
         }
         if let Some(origin) = *typing {
             match key {
-                "enter" => *typing = None,
+                "enter" => {
+                    *typing = None;
+                    // The whole search counts as one jump, from where it began.
+                    if self.layout.page_of(origin) != self.page() {
+                        self.leave(origin);
+                    }
+                }
                 "esc" | "ctrl+c" => {
                     // Dropped while typing: back to where the search began.
                     self.entry.at = origin;
@@ -1582,6 +1600,25 @@ impl Reader {
             self.unsent_turn = Some(turn);
         }
         self.go(page);
+    }
+
+    /// Goes to `page` as a jump, which `Return` can come back from.
+    fn jump(&mut self, page: usize) {
+        if page != self.page() {
+            self.leave(self.entry.at);
+        }
+        self.go(page);
+    }
+
+    /// Notes `at` as a place a jump left from.
+    fn leave(&mut self, at: Pos) {
+        const KEPT: usize = 100;
+        if self.trail.last() != Some(&at) {
+            self.trail.push(at);
+        }
+        if self.trail.len() > KEPT {
+            self.trail.remove(0);
+        }
     }
 
     fn go(&mut self, page: usize) {
@@ -2604,6 +2641,7 @@ mod tests {
             rtl: false,
             cell: None,
             folded: Default::default(),
+            trail: Vec::new(),
             socket: None,
             background: mpsc::channel(),
         };
@@ -2939,6 +2977,22 @@ mod tests {
         assert_eq!(r.page(), 1);
         keys(&mut r, &["N"]);
         assert_eq!(r.page(), 3);
+    }
+
+    #[test]
+    fn a_jump_can_be_gone_back_from() {
+        let mut r = reader(&["one", "two cat", "three", "cat four", "five"], 1);
+        keys(&mut r, &["space"]);
+        assert_eq!(r.page(), 1);
+        keys(&mut r, &["backspace"]);
+        assert_eq!(r.page(), 1, "a turn is not a jump");
+        // A search is one jump, however many finds it steps through.
+        keys(&mut r, &["space", "/", "c", "a", "t", "enter", "n", "n", "esc"]);
+        assert_eq!(r.page(), 3);
+        keys(&mut r, &["backspace"]);
+        assert_eq!(r.page(), 2);
+        keys(&mut r, &["backspace"]);
+        assert_eq!(r.page(), 2, "nothing left to go back to");
     }
 
     #[test]
