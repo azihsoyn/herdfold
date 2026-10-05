@@ -30,7 +30,12 @@ on from one to the next. Elsewhere it shows one page at a time.
 
 - **Formats are named, never guessed**: `text`, `md` (rendered: headings,
   emphasis, lists, quotes, code blocks, tables), `diff` (each file a
-  chapter; stdin works) and `epub`.
+  chapter; stdin works), `epub` and `aozora` (Aozora Bunko's text, in
+  Shift_JIS or UTF-8; the headings its notes name are the chapters).
+- **Japanese is set as it is printed**: punctuation, small kana and
+  closing brackets are kept off the start of a row, opening brackets off
+  its end, and `……` and `——` stay whole. Ruby (an EPUB's `<ruby>`, Aozora's
+  `｜漢字《かんじ》`) follows its text in brackets, dimmed: 漢字（かんじ）.
 - **Pages are cut by the height of the pane**, and rows are held to 72
   columns with margins around them, however wide the pane; `<` and `>`
   change that per book. Chapters open on a new page, set a quarter of the
