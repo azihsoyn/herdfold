@@ -264,6 +264,11 @@ fn sessions() -> Vec<Vec<Record>> {
         .collect()
 }
 
+/// Every session, summed up, oldest first.
+pub fn summaries() -> Vec<Summary> {
+    sessions().iter().filter_map(|r| summarize(r)).collect()
+}
+
 /// One session, summed up.
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct Summary {

@@ -18,6 +18,10 @@ herdfold --format md README.md
 gh pr diff 123 | herdfold --format diff -
 ```
 
+`herdfold` alone opens the shelf: the books read before, the one last
+read first, each with how far it has got, where, and for how long. `Enter`
+opens one where it was left; closing it comes back to the shelf.
+
 Inside [herdr](https://herdr.dev) the pane splits in two and the book opens
 as a spread: left page in one pane, right page in the other, the text running
 on from one to the next. Elsewhere it shows one page at a time.

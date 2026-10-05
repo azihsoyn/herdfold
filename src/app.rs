@@ -216,6 +216,8 @@ pub fn run(doc: Document, book: Option<String>, opening: Opening) -> Result<()> 
     if let Some(at) = start {
         entry.at = at;
     }
+    entry.format = Some(format);
+    entry.title = Some(doc.title.clone());
     let log_book = crate::log::Book {
         key: book.clone(),
         title: doc.title.clone(),

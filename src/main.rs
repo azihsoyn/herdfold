@@ -14,6 +14,7 @@ mod marks;
 mod note;
 mod pictures;
 mod server;
+mod shelf;
 mod turn;
 mod view;
 
@@ -39,11 +40,12 @@ pub const NAME: &str = env!("CARGO_PKG_NAME");
 #[command(name = NAME, version, subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
 struct Cli {
     /// How to read the input. Never guessed.
-    #[arg(long, value_enum, required = true)]
+    #[arg(long, value_enum, requires = "file")]
     format: Option<Format>,
 
-    /// The file to read, or `-` for stdin.
-    #[arg(required = true)]
+    /// The file to read, or `-` for stdin. With neither, the shelf of books
+    /// read before.
+    #[arg(requires = "format")]
     file: Option<PathBuf>,
 
     /// Show one page at a time, even inside herdr.
@@ -231,7 +233,23 @@ fn main() -> Result<ExitCode> {
         }
         None => {
             let (Some(format), Some(file)) = (cli.format, cli.file) else {
-                unreachable!("clap requires both without a subcommand");
+                // No book named: the shelf, until it is closed; a book
+                // closed comes back to it.
+                let mut say = None;
+                while let Some((format, file)) = shelf::pick(say.take())? {
+                    if let Err(e) = open(
+                        format,
+                        file,
+                        cli.no_spread,
+                        None,
+                        None,
+                        cli.agent.clone(),
+                        None,
+                    ) {
+                        say = Some(format!("{e:#}"));
+                    }
+                }
+                return Ok(ExitCode::SUCCESS);
             };
             open(
                 format,
