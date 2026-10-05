@@ -251,7 +251,12 @@ fn detail(b: &Shelved, width: usize) -> Vec<Span<'static>> {
     }
     let (bar, percent) = match &b.at {
         Some(at) => {
-            let p = (at.page * 100 / at.pages.max(1)).min(100);
+            // A book read to the end is full, wherever it was left.
+            let p = if b.finished.is_some() {
+                100
+            } else {
+                (at.page * 100 / at.pages.max(1)).min(100)
+            };
             let filled = p / 10;
             (
                 vec![
