@@ -103,7 +103,11 @@ mod tests {
         assert!(!runs.is_empty());
         assert!(runs.iter().all(|r| r.style.color.is_none_or(|c| c < 16)));
         // `fn` and the string are coloured differently.
-        let at = |i: usize| runs.iter().find(|r| r.start <= i && i < r.end).and_then(|r| r.style.color);
+        let at = |i: usize| {
+            runs.iter()
+                .find(|r| r.start <= i && i < r.end)
+                .and_then(|r| r.style.color)
+        };
         assert!(at(0).is_some() && at(21).is_some() && at(0) != at(21));
     }
 
