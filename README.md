@@ -75,6 +75,27 @@ through it; herdfold uses herdr's graphics API instead. Pictures inside an
 EPUB are kept in `~/.cache/herdfold/pictures` (`$XDG_CACHE_HOME` if set).
 Outside herdr, and for pictures on the web, their description is shown.
 
+## The reading log
+
+Each sitting with a book is a session, kept as a JSON Lines file of its
+own in `~/.local/share/herdfold/sessions/` (`$XDG_DATA_HOME` if set): when
+the book was opened and closed, the pages shown, bookmarks, notes and
+markers, searches and questions, one record a line.
+
+```sh
+herdfold log list [--book FILE]     # sessions, newest first, summed up
+herdfold log show SESSION           # one session, every record
+herdfold log export [--book FILE]   # every record, JSON Lines on stdout
+herdfold log import FILE            # records from export; kept ones stay
+herdfold log resume SESSION         # the book again, where that session left it
+```
+
+```json
+{"session":"20261005T120000Z-1a2b3c","time":"2026-10-05T12:00:00Z","type":"page_shown","at":{"line":120,"offset":0,"page":12,"pages":340,"chapter":"Ribbons and notes"}}
+```
+
+`herdfold api schema --json` gives the record's schema, under `log_record`.
+
 ## Asking the agent
 
 `?` sends a question, with the open pages (and the row or text you chose),

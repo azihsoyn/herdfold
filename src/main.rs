@@ -8,6 +8,7 @@ mod formats;
 mod herdr;
 mod keys;
 mod layout;
+mod log;
 mod marks;
 mod note;
 mod pictures;
@@ -76,6 +77,9 @@ enum Command {
     /// Notes in the book open in the reader at $HERDFOLD_SOCKET_PATH
     #[command(subcommand)]
     Note(NoteCommand),
+    /// The reading log: one JSON Lines file a session
+    #[command(subcommand)]
+    Log(LogCommand),
     /// Inspect the socket API
     #[command(subcommand)]
     Api(ApiCommand),
@@ -114,6 +118,28 @@ enum NoteCommand {
         #[arg(long)]
         question: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum LogCommand {
+    /// List sessions, newest first
+    List {
+        /// Only sessions with this book.
+        #[arg(long, value_name = "FILE")]
+        book: Option<PathBuf>,
+    },
+    /// Show a session: its summary and every record
+    Show { session: String },
+    /// Write every record as JSON Lines to stdout, oldest first
+    Export {
+        /// Only sessions with this book.
+        #[arg(long, value_name = "FILE")]
+        book: Option<PathBuf>,
+    },
+    /// Read records written by `export` (a file, or `-` for stdin)
+    Import { file: PathBuf },
+    /// Open the book a session read, where it left off
+    Resume { session: String },
 }
 
 #[derive(Subcommand)]
@@ -156,6 +182,35 @@ fn main() -> Result<ExitCode> {
         Some(Command::Config(ConfigCommand::ResetKeys)) => {
             Ok(cli::finish("config:reset-keys", keys::reset()))
         }
+        Some(Command::Log(LogCommand::List { book })) => {
+            Ok(cli::finish("log:list", log::list(book)))
+        }
+        Some(Command::Log(LogCommand::Show { session })) => {
+            Ok(cli::finish("log:show", log::show(&session)))
+        }
+        Some(Command::Log(LogCommand::Export { book })) => {
+            Ok(cli::finish("log:export", log::export(book)))
+        }
+        Some(Command::Log(LogCommand::Import { file })) => {
+            Ok(cli::finish("log:import", log::import(file)))
+        }
+        Some(Command::Log(LogCommand::Resume { session })) => {
+            let (book, at) = match log::resume_point(&session) {
+                Ok(found) => found,
+                Err(e) => return Ok(cli::finish("log:resume", Err(e))),
+            };
+            let file = PathBuf::from(book.key.unwrap_or_default());
+            open(
+                book.format,
+                file,
+                cli.no_spread,
+                None,
+                None,
+                cli.agent,
+                Some(at),
+            )?;
+            Ok(ExitCode::SUCCESS)
+        }
         Some(Command::Api(ApiCommand::Schema { json, output })) => {
             Ok(cli::finish("api:schema", cli::api_schema(json, output)))
         }
@@ -174,6 +229,7 @@ fn main() -> Result<ExitCode> {
                     _ => None,
                 },
                 cli.agent,
+                None,
             )?;
             Ok(ExitCode::SUCCESS)
         }
@@ -187,6 +243,7 @@ fn open(
     measure: Option<usize>,
     animate: Option<bool>,
     agent: Option<String>,
+    start: Option<layout::Pos>,
 ) -> Result<()> {
     let (bytes, name, book) = if file.as_os_str() == "-" {
         let mut buf = Vec::new();
@@ -207,5 +264,16 @@ fn open(
         .then(|| file.parent().map(|p| p.to_path_buf()))
         .flatten();
     let doc = formats::load(format, bytes, &name, dir.as_deref())?;
-    app::run(doc, book, !no_spread, measure, animate, agent)
+    app::run(
+        doc,
+        book,
+        app::Opening {
+            spread: !no_spread,
+            measure,
+            animate,
+            agent,
+            format,
+            start,
+        },
+    )
 }
