@@ -163,6 +163,10 @@ pub struct PageView {
     /// The book runs right to left: its progress bar fills from the right.
     #[serde(default, skip_serializing_if = "is_false")]
     pub rtl: bool,
+    /// In a spread, how much of this page's share of the bar is filled:
+    /// the two pages' bars read as one, across the spread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filled: Option<usize>,
 }
 
 /// A note shown in the margin, from row `row` (counted as in `rows`) down.
@@ -645,11 +649,13 @@ const MIN_BAR: usize = 8;
 
 /// `12  ━━━━━━──────` on a left page, `━━━━━━──────  13 / 240` otherwise,
 /// so page numbers sit on the outer edges of the spread.
-fn footer(v: &PageView, width: usize) -> Line<'static> {
-    let dim = Style::new().add_modifier(Modifier::DIM);
+/// How a page's foot is laid out: the page number (with the count on the
+/// page read second), what is left beside it, the bar's length, and
+/// whether the number sits at the left.
+pub fn foot(v: &PageView, width: usize) -> (String, String, usize, bool) {
     // The page read second in a spread carries the count and what is left,
     // on the spread's outer edge: the right page, or the left in a book
-    // bound on the right. The bar fills the way the pages run.
+    // bound on the right.
     let (outer_left, full_label) = match (v.side, v.rtl) {
         (Side::Single, rtl) => (rtl, true),
         (Side::Left, rtl) => (true, rtl),
@@ -676,7 +682,17 @@ fn footer(v: &PageView, width: usize) -> Line<'static> {
         .filter(|r| width >= label.width() + r.width() + MIN_BAR)
         .unwrap_or_default();
     let bar = width.saturating_sub(label.width() + left.width());
-    let filled = (bar * v.number).div_ceil(v.total.max(1)).min(bar);
+    (label, left, bar, outer_left)
+}
+
+fn footer(v: &PageView, width: usize) -> Line<'static> {
+    let dim = Style::new().add_modifier(Modifier::DIM);
+    let (label, left, bar, outer_left) = foot(v, width);
+    // The bar fills the way the pages run; in a spread, as one bar.
+    let filled = v
+        .filled
+        .unwrap_or_else(|| (bar * v.number).div_ceil(v.total.max(1)))
+        .min(bar);
     let full = Span::raw("━".repeat(filled));
     let rest = Span::styled("─".repeat(bar - filled), dim);
     let bar = if v.rtl {
@@ -732,6 +748,7 @@ mod tests {
             remaining: None,
             vertical: false,
             rtl,
+            filled: None,
         };
         footer(&v, 20)
             .spans

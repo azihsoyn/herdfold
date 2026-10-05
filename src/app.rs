@@ -629,6 +629,9 @@ impl Reader {
             (None, _) if left.side == Side::Single => left.remaining = remaining,
             (None, _) => {}
         }
+        if let Some(right) = &mut right {
+            spread_bar(&mut left, right, self.rtl);
+        }
         (left, right)
     }
 
@@ -692,6 +695,7 @@ impl Reader {
             remaining: None,
             vertical: self.vertical,
             rtl: self.rtl,
+            filled: None,
         }
     }
 
@@ -887,6 +891,7 @@ impl Reader {
             remaining: None,
             vertical: self.vertical,
             rtl: self.rtl,
+            filled: None,
             margin_notes,
             pictures,
         }
@@ -2475,6 +2480,23 @@ impl Reader {
     }
 }
 
+/// Fills the two pages' progress bars as one bar across the spread, from
+/// the outer edge of the page read first, to the last open page.
+fn spread_bar(left: &mut PageView, right: &mut PageView, rtl: bool) {
+    let len = |v: &PageView| view::foot(v, v.width).2;
+    let (first, second) = if rtl {
+        (&mut *right, &mut *left)
+    } else {
+        (&mut *left, &mut *right)
+    };
+    let (a, b) = (len(first), len(second));
+    let read = first.number.max(second.number);
+    let total = first.total.max(1);
+    let filled = ((a + b) * read).div_ceil(total).min(a + b);
+    first.filled = Some(filled.min(a));
+    second.filled = Some(filled.saturating_sub(a));
+}
+
 /// Adds `style` to the characters of page row `row` (set from layout row
 /// `r`) that lie from `from` up to `to`.
 fn paint_row(row: &mut PageRow, r: &crate::layout::Row, from: Pos, to: Pos, style: TextStyle) {
@@ -3408,6 +3430,30 @@ mod tests {
             "bound on the right, the left page is read second"
         );
         assert_eq!(right.unwrap().remaining, None);
+    }
+
+    #[test]
+    fn a_spread_has_one_bar_across_both_pages() {
+        let mut r = reader(&["a", "b", "c", "d", "e", "f", "g", "h"], 1);
+        r.spread = true;
+        let bars = |r: &Reader| {
+            let (l, rt) = r.views();
+            (l.filled.unwrap(), rt.unwrap().filled.unwrap())
+        };
+        // Pages 1-2 of 8: a quarter of the whole bar, all on the first page.
+        let (first, second) = bars(&r);
+        assert!(first > 0 && second == 0);
+        keys(&mut r, &["space", "space"]);
+        // Pages 5-6 of 8: past half, so into the second page's share.
+        let (first, second) = bars(&r);
+        let a = view::foot(&r.views().0, r.page_width()).2;
+        assert_eq!(first, a, "the first page's share is full");
+        assert!(second > 0);
+        // Bound on the right, the right page's share fills first.
+        r.rtl = true;
+        keys(&mut r, &["right", "right"]);
+        let (left, right) = bars(&r);
+        assert!(right > 0 && left == 0);
     }
 
     /// The page drawn into a pane of `size`, as text.
