@@ -114,12 +114,11 @@ impl Renderer {
                 }
             }
             Event::FootnoteReference(t) => {
-                let start = self.text.len();
+                let start = self.len;
                 self.inline.push(style(|s| s.underline = true));
                 self.push(&format!("[{t}]"));
                 self.inline.pop();
-                self.line_links
-                    .push((start, self.text.len(), format!("^{t}")));
+                self.line_links.push((start, self.len, format!("^{t}")));
             }
             Event::TaskListMarker(done) => {
                 // Replace the bullet just written with a box.
@@ -187,8 +186,7 @@ impl Renderer {
             Tag::Strikethrough => self.inline.push(style(|s| s.strike = true)),
             Tag::Link { dest_url, .. } => {
                 self.inline.push(style(|s| s.underline = true));
-                self.open_links
-                    .push((self.text.len(), dest_url.to_string()));
+                self.open_links.push((self.len, dest_url.to_string()));
             }
             Tag::FootnoteDefinition(label) => {
                 self.flush();
@@ -300,9 +298,9 @@ impl Renderer {
             TagEnd::Link => {
                 self.inline.pop();
                 if let Some((start, dest)) = self.open_links.pop()
-                    && start <= self.text.len()
+                    && start <= self.len
                 {
-                    self.line_links.push((start, self.text.len(), dest));
+                    self.line_links.push((start, self.len, dest));
                 }
             }
             TagEnd::FootnoteDefinition => {
@@ -511,17 +509,22 @@ mod tests {
     #[test]
     fn links_lead_to_headings_and_footnotes() {
         let d = load(
-            "# Top\n\nSee [the end](#the-end), or a note.[^n]\n\n## The end\n\n[^n]: The note.\n",
+            "# Top\n\n日本語の [the end](#the-end), or a note.[^n]\n\n## The end\n\n[^n]: The note.\n",
         );
         let at = |line: usize| d.lines[line].text.as_str();
         let [to_heading, to_note] = d.links[..] else {
             panic!("links: {:?}", d.links);
         };
-        let text = &at(to_heading.line)[to_heading.start..to_heading.end];
-        assert_eq!(text, "the end");
+        let chars = |l: crate::doc::Link| -> String {
+            at(l.line)
+                .chars()
+                .skip(l.start)
+                .take(l.end - l.start)
+                .collect()
+        };
+        assert_eq!(chars(to_heading), "the end");
         assert_eq!(at(to_heading.target), "The end");
-        let text = &at(to_note.line)[to_note.start..to_note.end];
-        assert_eq!(text, "[n]");
+        assert_eq!(chars(to_note), "[n]");
         assert_eq!(at(to_note.target), "[n] The note.");
     }
 

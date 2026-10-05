@@ -447,7 +447,7 @@ impl<'a> Html<'a> {
             .then(|| e.attr("href"))
             .flatten()
             .filter(|h| !h.contains(':'))
-            .map(|h| (self.lines.len(), self.cur.len(), h.to_string()));
+            .map(|h| (self.lines.len(), self.cur.chars().count(), h.to_string()));
 
         for c in &e.children {
             match c {
@@ -460,9 +460,10 @@ impl<'a> Html<'a> {
             && line == self.lines.len()
         {
             // Spaces at the edges are not part of the link.
-            let text = &self.cur[start..];
-            let start = start + (text.len() - text.trim_start().len());
-            let end = start + self.cur[start..].trim_end().len();
+            let text: Vec<char> = self.cur.chars().skip(start).collect();
+            let lead = text.iter().take_while(|c| **c == ' ').count();
+            let trail = text.iter().rev().take_while(|c| **c == ' ').count();
+            let (start, end) = (start + lead, start + text.len().saturating_sub(trail));
             if start < end {
                 self.line_links.push((start, end, href));
             }
@@ -514,11 +515,10 @@ impl<'a> Html<'a> {
             let mut line = Line::new(s, kind);
             let at = self.lines.len();
             for (start, end, href) in self.line_links.drain(..) {
-                let end = end.min(line.text.len());
-                let run = |b: usize| line.text[..b].chars().count();
+                let end = end.min(line.text.chars().count());
                 line.runs.push(Run {
-                    start: run(start),
-                    end: run(end),
+                    start,
+                    end,
                     style: Style {
                         underline: true,
                         ..Style::default()
@@ -611,6 +611,10 @@ mod tests {
         zip.finish().unwrap().into_inner()
     }
 
+    fn chars(s: &str, start: usize, end: usize) -> String {
+        s.chars().skip(start).take(end - start).collect()
+    }
+
     fn epub(files: &[(&str, &[u8])]) -> Vec<u8> {
         use std::io::Write;
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -635,7 +639,7 @@ mod tests {
             ),
             (
                 "a.xhtml",
-                br#"<html><body><p>A word<a href="b.xhtml#n1"> 1 </a> and <a href="b.xhtml">more</a>, <a href="https://x.org">web</a>.</p></body></html>"#,
+                r#"<html><body><p>A word<a href="b.xhtml#n1"> 注1 </a> and <a href="b.xhtml">more</a>, <a href="https://x.org">web</a>.</p></body></html>"#.as_bytes(),
             ),
             (
                 "b.xhtml",
@@ -644,12 +648,18 @@ mod tests {
         ]);
         let d = load(book).unwrap();
         let at = |line: usize| d.lines[line].text.as_str();
-        let found: Vec<(&str, &str)> = d
+        let found: Vec<(String, &str)> = d
             .links
             .iter()
-            .map(|l| (&at(l.line)[l.start..l.end], at(l.target)))
+            .map(|l| (chars(at(l.line), l.start, l.end), at(l.target)))
             .collect();
-        assert_eq!(found, [("1", "The note."), ("more", "Start")]);
+        assert_eq!(
+            found,
+            [
+                ("注1".to_string(), "The note."),
+                ("more".to_string(), "Start")
+            ]
+        );
         assert!(d.lines[0].style_at(7).underline);
     }
 

@@ -163,7 +163,7 @@ pub struct Chapter {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Link {
     pub line: usize,
-    /// Byte offsets of the link's text in the line.
+    /// Character offsets of the link's text in the line, as `Pos` counts.
     pub start: usize,
     pub end: usize,
     /// The line it leads to.
