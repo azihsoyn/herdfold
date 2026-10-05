@@ -160,6 +160,9 @@ pub struct PageView {
     /// Set in vertical columns, right to left, each row a column.
     #[serde(default, skip_serializing_if = "is_false")]
     pub vertical: bool,
+    /// The book runs right to left: its progress bar fills from the right.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub rtl: bool,
 }
 
 /// A note shown in the margin, from row `row` (counted as in `rows`) down.
@@ -644,27 +647,50 @@ const MIN_BAR: usize = 8;
 /// so page numbers sit on the outer edges of the spread.
 fn footer(v: &PageView, width: usize) -> Line<'static> {
     let dim = Style::new().add_modifier(Modifier::DIM);
-    let label = match v.side {
-        Side::Left => format!("{}  ", v.number),
-        Side::Right | Side::Single => format!("  {} / {}", v.number, v.total),
+    // The page read second in a spread carries the count and what is left,
+    // on the spread's outer edge: the right page, or the left in a book
+    // bound on the right. The bar fills the way the pages run.
+    let (outer_left, full_label) = match (v.side, v.rtl) {
+        (Side::Single, rtl) => (rtl, true),
+        (Side::Left, rtl) => (true, rtl),
+        (Side::Right, rtl) => (false, !rtl),
     };
-    // What is left goes before the number, while the bar keeps some length.
+    let label = match (full_label, outer_left) {
+        (true, true) => format!("{} / {}  ", v.number, v.total),
+        (true, false) => format!("  {} / {}", v.number, v.total),
+        (false, true) => format!("{}  ", v.number),
+        (false, false) => format!("  {}", v.number),
+    };
+    // What is left goes beside the count, while the bar keeps some length.
     let left = v
         .remaining
         .as_deref()
-        .map(|r| format!("  {r}"))
+        .filter(|_| full_label)
+        .map(|r| {
+            if outer_left {
+                format!("{r}  ")
+            } else {
+                format!("  {r}")
+            }
+        })
         .filter(|r| width >= label.width() + r.width() + MIN_BAR)
         .unwrap_or_default();
     let bar = width.saturating_sub(label.width() + left.width());
     let filled = (bar * v.number).div_ceil(v.total.max(1)).min(bar);
     let full = Span::raw("━".repeat(filled));
     let rest = Span::styled("─".repeat(bar - filled), dim);
-    match v.side {
-        Side::Left => Line::from(vec![Span::raw(label), full, rest]),
-        Side::Right | Side::Single => {
-            Line::from(vec![full, rest, Span::styled(left, dim), Span::raw(label)])
-        }
-    }
+    let bar = if v.rtl {
+        vec![rest, full]
+    } else {
+        vec![full, rest]
+    };
+    let (label, left) = (Span::raw(label), Span::styled(left, dim));
+    let spans = if outer_left {
+        [vec![label, left], bar].concat()
+    } else {
+        [bar, vec![left, label]].concat()
+    };
+    Line::from(spans)
 }
 
 /// Truncates `s` to `width` columns, marking the cut with an ellipsis.
@@ -689,6 +715,39 @@ pub fn fit(s: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn footer_text(side: Side, rtl: bool) -> String {
+        let v = PageView {
+            side,
+            head: String::new(),
+            rows: Vec::new(),
+            number: 3,
+            total: 12,
+            ribbon: None,
+            noted: false,
+            width: 20,
+            status: None,
+            margin_notes: Vec::new(),
+            pictures: Vec::new(),
+            remaining: None,
+            vertical: false,
+            rtl,
+        };
+        footer(&v, 20)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn the_bar_fills_the_way_the_pages_run() {
+        assert_eq!(footer_text(Side::Right, false), "━━━─────────  3 / 12");
+        assert_eq!(footer_text(Side::Left, false), "3  ━━━━━────────────");
+        assert_eq!(footer_text(Side::Left, true), "3 / 12  ─────────━━━");
+        assert_eq!(footer_text(Side::Right, true), "────────────━━━━━  3");
+        assert_eq!(footer_text(Side::Single, true), "3 / 12  ─────────━━━");
+    }
 
     #[test]
     fn text_is_capped_at_the_measure() {

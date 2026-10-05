@@ -621,10 +621,13 @@ impl Reader {
     fn views(&self) -> (PageView, Option<PageView>) {
         let (mut left, mut right) = self.open_views();
         let remaining = self.remaining();
-        match &mut right {
-            Some(r) => r.remaining = remaining,
-            None if left.side == Side::Single => left.remaining = remaining,
-            None => {}
+        // Beside the page read second: the right one, or the left one in a
+        // book bound on the right.
+        match (&mut right, self.rtl) {
+            (Some(r), false) => r.remaining = remaining,
+            (Some(_), true) => left.remaining = remaining,
+            (None, _) if left.side == Side::Single => left.remaining = remaining,
+            (None, _) => {}
         }
         (left, right)
     }
@@ -688,6 +691,7 @@ impl Reader {
             pictures: Vec::new(),
             remaining: None,
             vertical: self.vertical,
+            rtl: self.rtl,
         }
     }
 
@@ -882,6 +886,7 @@ impl Reader {
             status: (side != Side::Left).then(|| self.toast()).flatten(),
             remaining: None,
             vertical: self.vertical,
+            rtl: self.rtl,
             margin_notes,
             pictures,
         }
@@ -3396,6 +3401,13 @@ mod tests {
         let (left, right) = r.views();
         assert_eq!(left.remaining, None, "only beside the last open page");
         assert!(right.unwrap().remaining.is_some());
+        r.rtl = true;
+        let (left, right) = r.views();
+        assert!(
+            left.remaining.is_some(),
+            "bound on the right, the left page is read second"
+        );
+        assert_eq!(right.unwrap().remaining, None);
     }
 
     /// The page drawn into a pane of `size`, as text.
