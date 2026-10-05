@@ -4,6 +4,7 @@ mod attach;
 mod cli;
 mod client;
 mod doc;
+mod export;
 mod formats;
 mod herdr;
 mod keys;
@@ -74,7 +75,7 @@ enum Command {
     /// Reader helpers over the socket API
     #[command(subcommand)]
     Reader(ReaderCommand),
-    /// Notes in the book open in the reader at $HERDFOLD_SOCKET_PATH
+    /// Notes: written into the open reader, or exported from a book
     #[command(subcommand)]
     Note(NoteCommand),
     /// The reading log: one JSON Lines file a session
@@ -117,6 +118,17 @@ enum NoteCommand {
         /// The question the note answers.
         #[arg(long)]
         question: Option<String>,
+    },
+    /// Print the notes, markers and bookmarks written in a book, as Markdown
+    Export {
+        /// How to read the book. Never guessed.
+        #[arg(long, value_enum)]
+        format: Format,
+        /// The book.
+        file: PathBuf,
+        /// JSON instead, in herdr's reply envelope.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -175,6 +187,9 @@ fn main() -> Result<ExitCode> {
         })) => {
             let params = note::params(text, note::place(line, offset), anchor, by, question);
             Ok(cli::finish("note:add", note::add(params)))
+        }
+        Some(Command::Note(NoteCommand::Export { format, file, json })) => {
+            Ok(cli::finish("note:export", export::run(format, file, json)))
         }
         Some(Command::Config(ConfigCommand::Check)) => {
             Ok(cli::finish("config:check", keys::check()))

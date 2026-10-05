@@ -1418,21 +1418,7 @@ impl Reader {
 
     /// The text from `from` up to `to`, lines joined by newlines.
     fn text_between(&self, from: Pos, to: Pos) -> String {
-        let mut out = String::new();
-        for line in from.line..=to.line.min(self.doc.lines.len().saturating_sub(1)) {
-            let chars: Vec<char> = self.doc.lines[line].text.chars().collect();
-            let a = if line == from.line { from.offset } else { 0 };
-            let b = if line == to.line {
-                to.offset
-            } else {
-                chars.len()
-            };
-            if line > from.line {
-                out.push('\n');
-            }
-            out.extend(chars.iter().take(b.min(chars.len())).skip(a));
-        }
-        out
+        self.doc.text_between(from, to)
     }
 
     /// The bookmark whose ribbon is drawn at cell (`col`, `row`) of a pane
@@ -1742,13 +1728,7 @@ impl Reader {
 
     /// `at` as the reading log keeps it.
     fn place(&self, at: Pos) -> crate::log::Place {
-        let chapter = self
-            .doc
-            .chapters
-            .iter()
-            .rev()
-            .find(|c| c.line <= at.line)
-            .map(|c| c.title.clone());
+        let chapter = self.doc.chapter_of(at.line).map(|c| c.title.clone());
         crate::log::Place {
             line: at.line,
             offset: at.offset,

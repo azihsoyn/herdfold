@@ -64,6 +64,11 @@ on from one to the next. Elsewhere it shows one page at a time.
   mouse for this, since the terminal's own selection would run across
   both panes of a spread; `y` copies the chosen text.
 - `l` lists bookmarks and notes together.
+- **Take them away**: `herdfold note export --format epub the-book.epub`
+  prints what you wrote in a book as Markdown, under its chapters: each
+  marker's text quoted, each note, each question and its answer, then the
+  bookmarks. `--json` gives the same as data (`note_export` in
+  `herdfold api schema --json`).
 
 ## Pictures
 
