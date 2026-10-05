@@ -59,6 +59,11 @@ enum Mode {
     Marker(usize),
     /// A bookmark (the one at this index), its ribbon clicked on.
     Bookmark(usize),
+    /// Choosing among the links on the open pages; this one (in
+    /// `doc.links`) is pointed at.
+    Link(usize),
+    /// What a link (in `doc.links`) leads to, shown where the reader is.
+    Peek(usize),
     /// Searching: the words sought, where they were found, which find is
     /// shown, and whether the words are still being typed (and from where,
     /// to go back to if the search is dropped).
@@ -654,6 +659,23 @@ impl Reader {
         if let Mode::Selected { from, to } = self.mode {
             paint.push((from, to, selected));
         }
+        if let Mode::Link(i) = self.mode {
+            let l = self.doc.links[i];
+            let (from, to) = (
+                Pos {
+                    line: l.line,
+                    offset: l.start,
+                },
+                Pos {
+                    line: l.line,
+                    offset: l.end,
+                },
+            );
+            paint.push((from, to, selected));
+            if let Some(row) = self.layout.row_of(n, from) {
+                rows[pad + row].pointer = true;
+            }
+        }
         if let Mode::Search { hits, current, .. } = &self.mode {
             let found = TextStyle {
                 found: true,
@@ -853,6 +875,23 @@ impl Reader {
             Mode::Contents(sel) => self.in_contents(sel, cmd),
             Mode::Shelf(sel) => self.in_shelf(sel, cmd),
             Mode::Select(at) => self.in_select(at, cmd),
+            Mode::Link(i) => self.in_links(i, cmd),
+            Mode::Peek(i) => {
+                match cmd {
+                    Cmd::Enter | Cmd::Follow => {
+                        self.mode = Mode::Reading;
+                        let target = Pos {
+                            line: self.doc.links[i].target,
+                            offset: 0,
+                        };
+                        let page = self.layout.page_of(target);
+                        self.jump(page);
+                    }
+                    Cmd::Quit => return true,
+                    _ => self.mode = Mode::Reading,
+                }
+                false
+            }
             // Any key puts the list of keys away; q too, rather than closing the book.
             Mode::Help => {
                 self.mode = Mode::Reading;
@@ -984,6 +1023,10 @@ impl Reader {
             },
             // Esc steps back out of whatever is open; here, the book.
             Cmd::Quit | Cmd::Back => return true,
+            Cmd::Follow => match self.open_links().first() {
+                Some(&i) => self.mode = Mode::Link(i),
+                None => self.say("No links on these pages".into()),
+            },
             Cmd::Return => match self.trail.pop() {
                 Some(at) => {
                     self.entry.at = at;
@@ -1090,6 +1133,52 @@ impl Reader {
             _ => self.mode = Mode::Reading,
         }
         false
+    }
+
+    /// The links on the open pages, as indexes into `doc.links`.
+    fn open_links(&self) -> Vec<usize> {
+        let pages = self.open_pages();
+        let (first, last) = (
+            self.layout.start_of(pages.start),
+            self.layout.start_of(pages.end),
+        );
+        let to_end = pages.end >= self.layout.page_count();
+        self.doc
+            .links
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| {
+                let at = Pos {
+                    line: l.line,
+                    offset: l.start,
+                };
+                at >= first && (to_end || at < last)
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    fn in_links(&mut self, i: usize, cmd: Cmd) -> bool {
+        let links = self.open_links();
+        let at = links.iter().position(|&l| l == i).unwrap_or(0);
+        match cmd {
+            Cmd::Up | Cmd::Prev => self.mode = Mode::Link(links[at.saturating_sub(1)]),
+            Cmd::Down | Cmd::Next | Cmd::Follow => {
+                self.mode = Mode::Link(links[(at + 1) % links.len()]);
+            }
+            Cmd::Enter => self.mode = Mode::Peek(i),
+            Cmd::Quit => return true,
+            _ => self.mode = Mode::Reading,
+        }
+        false
+    }
+
+    /// The link whose text is at `at`, if any.
+    fn link_at(&self, at: Pos) -> Option<usize> {
+        self.doc
+            .links
+            .iter()
+            .position(|l| l.line == at.line && l.start <= at.offset && at.offset < l.end)
     }
 
     fn in_select(&mut self, at: Pos, cmd: Cmd) -> bool {
@@ -1226,10 +1315,12 @@ impl Reader {
             MouseKind::Up => {
                 let start = self.dragging.take();
                 if start == Some(at) {
-                    // A click: on a marker, open it; elsewhere, let go.
-                    self.mode = match self.marker_at(at) {
-                        Some(i) => Mode::Marker(i),
-                        None => Mode::Reading,
+                    // A click: on a marker, open it; on a link, show where
+                    // it leads; elsewhere, let go.
+                    self.mode = match (self.marker_at(at), self.link_at(at)) {
+                        (Some(i), _) => Mode::Marker(i),
+                        (None, Some(i)) => Mode::Peek(i),
+                        (None, None) => Mode::Reading,
                     };
                 }
             }
@@ -1862,6 +1953,17 @@ impl Reader {
         all
     }
 
+    /// The passage starting at `line`, up to the next blank line.
+    fn passage(&self, line: usize) -> Vec<String> {
+        self.doc.lines[line.min(self.doc.lines.len())..]
+            .iter()
+            .skip_while(|l| l.text.trim().is_empty())
+            .take_while(|l| !l.text.trim().is_empty())
+            .take(12)
+            .map(|l| l.text.clone())
+            .collect()
+    }
+
     fn draw_overlay(&self, f: &mut Frame) {
         if !matches!(
             self.mode,
@@ -1870,6 +1972,7 @@ impl Reader {
                 | Mode::Selected { .. }
                 | Mode::Marker(_)
                 | Mode::Bookmark(_)
+                | Mode::Link(_)
                 | Mode::Search { list: None, .. }
         ) {
             let area = f.area();
@@ -1877,6 +1980,15 @@ impl Reader {
         }
         match &self.mode {
             Mode::Reading | Mode::Select(_) => {}
+            Mode::Link(_) => draw_hint(f, "Links", "Enter see · f next · Esc back"),
+            Mode::Peek(i) => {
+                let link = self.doc.links[*i];
+                let page = self.layout.page_of(Pos {
+                    line: link.target,
+                    offset: 0,
+                }) + 1;
+                draw_peek(f, &self.passage(link.target), page);
+            }
             // The page stays bright: the chosen text is what is being acted on.
             Mode::Selected { from, to } if self.dragging.is_none() => {
                 let quote = self.text_between(*from, *to).replace('\n', " ");
@@ -2355,6 +2467,47 @@ fn draw_marker(f: &mut Frame, quote: &str, note: &str, color: Ribbon) {
     if !note.is_empty() {
         lines.push(Line::raw(view::fit(&format!("✎ {note}"), w)));
     }
+    f.render_widget(Paragraph::new(lines).style(view::panel_style()), room);
+}
+
+/// A one-line panel at the foot naming what the keys do now.
+fn draw_hint(f: &mut Frame, title: &str, hint: &str) {
+    let area = f.area();
+    let width = area.width.saturating_sub(4).min(60);
+    let height = view::panel_height(0, 0);
+    let x = area.x + (area.width - width) / 2;
+    let y = area.bottom().saturating_sub(height + 3);
+    let panel = Rect::new(x, y, width, height).intersection(area);
+    view::draw_panel(f.buffer_mut(), panel, title, hint, 0);
+}
+
+/// Where a link leads: the passage there, wrapped, and its page.
+fn draw_peek(f: &mut Frame, passage: &[String], page: usize) {
+    let area = f.area();
+    let width = area.width.saturating_sub(4).min(80);
+    let inner = width.saturating_sub(4) as usize;
+    let mut lines: Vec<Line> = passage
+        .iter()
+        .flat_map(|p| crate::layout::set(0, &DocLine::new(p.as_str(), Kind::Body), inner.max(10)))
+        .map(|r| Line::raw(r.text))
+        .collect();
+    let most = area.height.saturating_sub(10).max(3) as usize;
+    if lines.len() > most {
+        lines.truncate(most);
+        lines.push(Line::raw("…"));
+    }
+    let height = view::panel_height(lines.len() as u16, 0);
+    let x = area.x + (area.width - width) / 2;
+    let y = area.bottom().saturating_sub(height + 3);
+    let panel = Rect::new(x, y, width, height).intersection(area);
+    let title = format!("p.{page}");
+    let room = view::draw_panel(
+        f.buffer_mut(),
+        panel,
+        &title,
+        "Enter go there · Esc close",
+        0,
+    );
     f.render_widget(Paragraph::new(lines).style(view::panel_style()), room);
 }
 
@@ -2987,12 +3140,39 @@ mod tests {
         keys(&mut r, &["backspace"]);
         assert_eq!(r.page(), 1, "a turn is not a jump");
         // A search is one jump, however many finds it steps through.
-        keys(&mut r, &["space", "/", "c", "a", "t", "enter", "n", "n", "esc"]);
+        keys(
+            &mut r,
+            &["space", "/", "c", "a", "t", "enter", "n", "n", "esc"],
+        );
         assert_eq!(r.page(), 3);
         keys(&mut r, &["backspace"]);
         assert_eq!(r.page(), 2);
         keys(&mut r, &["backspace"]);
         assert_eq!(r.page(), 2, "nothing left to go back to");
+    }
+
+    #[test]
+    fn a_link_shows_where_it_leads_and_goes_there() {
+        let mut r = reader(&["see note 1", "two", "three", "the note"], 1);
+        r.doc.links.push(crate::doc::Link {
+            line: 0,
+            start: 9,
+            end: 10,
+            target: 3,
+        });
+        keys(&mut r, &["space", "f"]);
+        assert_eq!(r.mode, Mode::Reading, "no link on the second page");
+        keys(&mut r, &["b", "f"]);
+        assert_eq!(r.mode, Mode::Link(0));
+        assert!(r.views().0.rows[0].spans.iter().any(|s| s.style.selected));
+        keys(&mut r, &["enter"]);
+        assert_eq!(r.mode, Mode::Peek(0));
+        assert_eq!(r.passage(3), ["the note"]);
+        assert_eq!(r.page(), 0, "seeing is not going");
+        keys(&mut r, &["enter"]);
+        assert_eq!((r.page(), &r.mode), (3, &Mode::Reading));
+        keys(&mut r, &["backspace"]);
+        assert_eq!(r.page(), 0);
     }
 
     #[test]

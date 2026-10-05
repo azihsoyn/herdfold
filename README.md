@@ -41,6 +41,11 @@ on from one to the next. Elsewhere it shows one page at a time.
   are in pointed at; `←` / `→` fold and unfold sections. `Backspace`
   goes back to the page you jumped from, from there or from the list or
   a search.
+- **Notes and cross-references** in the book are links: `f` points at
+  each on the open pages in turn, or click one; `Enter` shows the passage
+  it leads to over the page, and `Enter` again goes there (`Backspace`
+  comes back). Markdown footnotes (`[^1]`) and links to headings
+  (`[see](#the-heading)`) count, as do an EPUB's links between its pages.
 - **Search** (`/` or `Ctrl-F`) finds as you type; `n` / `N` step through
   the finds, `l` lists them with the words around each.
 - **Your place is kept** per book, as a position in the text rather than a
@@ -85,13 +90,14 @@ book as a note (`✦`) by running `herdfold note add`.
 | `b` / `←` | turn back |
 | `g` | contents |
 | `Backspace` / `Ctrl-O` | back to where the last jump (contents, list, search) left from |
+| `f` | links here: `Enter` to see where one leads, again to go |
 | `/` or `Ctrl-F` | search |
 | `m` | bookmark the page (again to remove) |
 | `c` | colour of the bookmark here |
 | `n` | write a note on the page |
 | `v` | choose a row: `Enter` to note it, `?` to ask about it |
 | drag | choose text: `m` marker · `n` note · `?` ask · `y` copy |
-| click | on a ribbon or a marker: colour, note, remove |
+| click | on a ribbon or a marker: colour, note, remove; on a link: where it leads |
 | `l` | bookmarks and notes |
 | `N` | notes as footnotes / in the margin / marks only |
 | `?` | ask the agent about the open pages |
@@ -117,7 +123,7 @@ help = "?"
 ask = "A"
 ```
 
-The actions: `next_page` `previous_page` `contents` `go_back` `search` `bookmark`
+The actions: `next_page` `previous_page` `contents` `go_back` `follow_link` `search` `bookmark`
 `bookmark_color` `note` `choose_row` `list` `note_display` `ask`
 `shorter_rows` `longer_rows` `animation` `direction` `help` `tip` `up` `down`
 `enter` `remove` `back` `quit`. `herdfold config check` reports what is wrong
