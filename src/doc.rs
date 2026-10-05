@@ -41,6 +41,9 @@ pub struct Style {
     /// Inline code.
     #[serde(default, skip_serializing_if = "is_false")]
     pub code: bool,
+    /// A colour from the terminal's palette (0-15), as code is highlighted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<u8>,
     /// Under a highlighter marker, of this colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marker: Option<crate::marks::Ribbon>,
@@ -63,6 +66,7 @@ impl Style {
             dim: self.dim || o.dim,
             accent: self.accent || o.accent,
             code: self.code || o.code,
+            color: o.color.or(self.color),
             marker: o.marker.or(self.marker),
             selected: self.selected || o.selected,
             found: self.found || o.found,

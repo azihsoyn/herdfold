@@ -7,6 +7,7 @@ mod doc;
 mod export;
 mod formats;
 mod herdr;
+mod highlight;
 mod keys;
 mod layout;
 mod log;

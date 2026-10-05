@@ -30,8 +30,13 @@ on from one to the next. Elsewhere it shows one page at a time.
 
 - **Formats are named, never guessed**: `text`, `md` (rendered: headings,
   emphasis, lists, quotes, code blocks, tables), `diff` (each file a
-  chapter; stdin works), `epub` and `aozora` (Aozora Bunko's text, in
+  chapter, additions and removals coloured; stdin works), `epub` and `aozora` (Aozora Bunko's text, in
   Shift_JIS or UTF-8; the headings its notes name are the chapters).
+- **Code is highlighted** by its language, with the grammars bat
+  bundles: a Markdown fence's language, an EPUB's `language-…` or
+  `sourceCode …` class, a diff's file extension. The colours are the
+  terminal's own palette, so they suit a light terminal as well as a dark
+  one.
 - **Japanese is set as it is printed**: punctuation, small kana and
   closing brackets are kept off the start of a row, opening brackets off
   its end, and `……` and `——` stay whole. Ruby (an EPUB's `<ruby>`, Aozora's
