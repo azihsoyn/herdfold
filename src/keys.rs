@@ -89,6 +89,12 @@ pub const ACTIONS: &[(Cmd, &str, &[&str], &str)] = &[
         &["D"],
         "pages run left to right / right to left",
     ),
+    (
+        Cmd::Vertical,
+        "vertical",
+        &["V"],
+        "set in vertical columns / across",
+    ),
     (Cmd::Help, "help", &["h", "H"], "these keys"),
     (Cmd::Tip, "tip", &["T"], "a tip"),
     (Cmd::Up, "up", &["k", "up"], "up, in a list"),

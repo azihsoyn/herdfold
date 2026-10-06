@@ -23,7 +23,9 @@ use crate::herdr::{self, RightPane};
 use crate::keys::{self, Keymap};
 use crate::layout::{Layout, Pos};
 use crate::log::Event as Logged;
-use crate::marks::{self, Anchor, Author, Direction, Entry, Mark, Note, NoteDisplay, Ribbon};
+use crate::marks::{
+    self, Anchor, Author, Direction, Entry, Mark, Note, NoteDisplay, Ribbon, Writing,
+};
 use crate::pictures::Pictures;
 use crate::server::{ConnId, Hub, Inbound, Server};
 use crate::turn::{Turn, Turning};
@@ -150,6 +152,8 @@ struct Reader {
     keymap: Keymap,
     /// The pages run right to left: the right page comes first.
     rtl: bool,
+    /// Set in vertical columns, right to left.
+    vertical: bool,
     /// A character cell's size in pixels, where herdr can set pictures.
     cell: Option<(u32, u32)>,
     /// Chapters folded shut in the contents, their sections hidden.
@@ -235,6 +239,7 @@ pub fn run(doc: Document, book: Option<String>, opening: Opening) -> Result<()> 
         layout: Layout::new(&doc, 1, 1),
         doc,
         book,
+        vertical: entry.writing == Some(Writing::Vertical),
         entry,
         rtl,
         cell: std::env::var("HERDR_PANE_ID")
@@ -340,10 +345,12 @@ impl Reader {
                 // Both pages are set to the smaller pane so they match.
                 size = (size.0.min(w), size.1.min(h));
             }
-            self.fit(
-                view::text_size(size.0, size.1, self.measure),
-                self.attached.is_some(),
-            );
+            let text = if self.vertical {
+                view::vertical_size(size.0, size.1, self.measure)
+            } else {
+                view::text_size(size.0, size.1, self.measure)
+            };
+            self.fit(text, self.attached.is_some());
             // Pages passed through while typing a search are not read.
             if !matches!(
                 self.mode,
@@ -353,8 +360,9 @@ impl Reader {
                 }
             ) {
                 let at = self.place(self.entry.at);
+                let at_end = self.page() + self.step() >= self.layout.page_count();
                 if let Some(log) = &mut self.log {
-                    log.shown(at);
+                    log.shown(at, at_end);
                 }
             }
 
@@ -546,7 +554,8 @@ impl Reader {
             spread,
             notes: self.note_display,
             notes_rev: self.notes_rev,
-            cell: self.cell,
+            // Pictures are only set across.
+            cell: self.cell.filter(|_| !self.vertical),
         };
         if self.laid_for == Some(want) {
             return;
@@ -560,9 +569,9 @@ impl Reader {
                 .filter(|n| !n.text.is_empty())
                 .map(|n| (n.at, footnote_rows(n, width).len()))
                 .collect();
-            Layout::with_footnotes(&self.doc, width, height, &footnotes, self.cell)
+            Layout::with_footnotes(&self.doc, width, height, &footnotes, want.cell)
         } else {
-            Layout::with_footnotes(&self.doc, width, height, &[], self.cell)
+            Layout::with_footnotes(&self.doc, width, height, &[], want.cell)
         };
         self.spread = spread;
         self.chapter_pages = self
@@ -673,11 +682,12 @@ impl Reader {
             total: self.layout.page_count(),
             ribbon: None,
             noted: false,
-            width: self.layout.width,
+            width: self.page_width(),
             status: None,
             margin_notes: Vec::new(),
             pictures: Vec::new(),
             remaining: None,
+            vertical: self.vertical,
         }
     }
 
@@ -867,10 +877,11 @@ impl Reader {
                 .notes
                 .iter()
                 .any(|note| note.anchor == Anchor::Page && self.layout.page_of(note.at) == n),
-            width: self.layout.width,
+            width: self.page_width(),
             // The snackbar sits at the bottom right of the book.
             status: (side != Side::Left).then(|| self.toast()).flatten(),
             remaining: None,
+            vertical: self.vertical,
             margin_notes,
             pictures,
         }
@@ -1046,6 +1057,25 @@ impl Reader {
                     "Pages run right to left".into()
                 } else {
                     "Pages run left to right".into()
+                });
+                self.save();
+            }
+            Cmd::Vertical => {
+                self.vertical = !self.vertical;
+                self.entry.writing = Some(if self.vertical {
+                    Writing::Vertical
+                } else {
+                    Writing::Horizontal
+                });
+                // Columns run right to left, and so do the pages.
+                if self.vertical && !self.rtl {
+                    self.rtl = true;
+                    self.entry.direction = Some(Direction::RightToLeft);
+                }
+                self.say(if self.vertical {
+                    "Set vertically".into()
+                } else {
+                    "Set across".into()
                 });
                 self.save();
             }
@@ -1419,7 +1449,10 @@ impl Reader {
             return None;
         }
         let area = Rect::new(0, 0, size.0, size.1);
-        let (x0, _) = view::column(area, self.layout.width);
+        let (x0, w) = view::column(area, self.page_width());
+        if self.vertical {
+            return self.point_in_column(n, (x0, w), col, row);
+        }
         let i = (row as usize)
             .saturating_sub(view::TOP as usize + self.layout.pad(n))
             .min(rows.len() - 1);
@@ -1451,6 +1484,49 @@ impl Reader {
         })
     }
 
+    /// `point_at` on a page set vertically in a column of text at `x0`,
+    /// `w` wide.
+    fn point_in_column(&self, n: usize, (x0, w): (u16, u16), col: u16, row: u16) -> Option<Pos> {
+        let rows = self.layout.page(n);
+        let from_right = (x0 + w).saturating_sub(col) as usize;
+        let i = (from_right / view::COLUMN_STRIDE)
+            .saturating_sub(self.layout.pad(n))
+            .min(rows.len() - 1);
+        let r = &rows[i];
+        let cells = view::column_cells(&r.text);
+        let k = (row as usize).saturating_sub(view::TOP as usize);
+        let Some(cell) = cells.get(k) else {
+            // Below the column's text: its last character.
+            return Some(Pos {
+                line: r.pos.line,
+                offset: r.pos.offset + r.len.saturating_sub(1),
+            });
+        };
+        // Of two narrow characters side by side, the one under the pointer.
+        let right_half = view::column_x(x0, w, i + self.layout.pad(n)).is_some_and(|cx| col > cx);
+        let j = if right_half && cell.len() == 2 {
+            cell.start + 1
+        } else {
+            cell.start
+        };
+        Some(match j.checked_sub(r.lead) {
+            None => r.pos,
+            Some(k) => Pos {
+                line: r.pos.line,
+                offset: r.pos.offset + k.min(r.len.saturating_sub(1)),
+            },
+        })
+    }
+
+    /// Columns the page takes across the pane.
+    fn page_width(&self) -> usize {
+        if self.vertical {
+            (self.layout.height * view::COLUMN_STRIDE).saturating_sub(1)
+        } else {
+            self.layout.width
+        }
+    }
+
     /// The place just after the character at `at`.
     fn next_char(&self, at: Pos) -> Pos {
         Pos {
@@ -1480,7 +1556,7 @@ impl Reader {
             .iter()
             .position(|m| self.layout.page_of(m.at) == n)?;
         let area = Rect::new(0, 0, size.0, size.1);
-        let (x, w) = view::column(area, self.layout.width);
+        let (x, w) = view::column(area, self.page_width());
         let ribbon = view::ribbon_area(area, x, w, side);
         // A cell's leeway around so small a target.
         let hit = Rect::new(
@@ -2911,6 +2987,7 @@ mod tests {
             rtl: false,
             cell: None,
             folded: Default::default(),
+            vertical: false,
             trail: Vec::new(),
             log: None,
             pace: None,
@@ -3319,6 +3396,52 @@ mod tests {
         let (left, right) = r.views();
         assert_eq!(left.remaining, None, "only beside the last open page");
         assert!(right.unwrap().remaining.is_some());
+    }
+
+    /// The page drawn into a pane of `size`, as text.
+    fn drawn(r: &Reader, size: (u16, u16)) -> Vec<String> {
+        let area = Rect::new(0, 0, size.0, size.1);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        view::render(&mut buf, area, Some(&r.views().0));
+        (0..size.1)
+            .map(|y| {
+                let mut row = String::new();
+                let mut skip = 0;
+                for x in 0..size.0 {
+                    if skip > 0 {
+                        skip -= 1;
+                        continue;
+                    }
+                    let sym = buf[(x, y)].symbol();
+                    skip = sym.width().saturating_sub(1);
+                    row.push_str(sym);
+                }
+                row.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn vertical_text_runs_down_in_columns_from_the_right() {
+        let mut r = reader(&["あいう、えお。12"], 1);
+        keys(&mut r, &["V"]);
+        assert!(r.vertical && r.rtl);
+        let (w, h) = view::vertical_size(20, 10, 72);
+        assert_eq!((w, h), (8, 4));
+        r.laid_for = None;
+        r.fit((w, h), false);
+        r.toast = None;
+        let rows = drawn(&r, (20, 10));
+        let text: Vec<&str> = rows[3..7].iter().map(|s| s.trim_start()).collect();
+        // Two columns: the first on the right, punctuation turned upright.
+        assert_eq!(text, ["え あ", "お い", "︒ う", "12 ︑"]);
+        // A press on the second column's top character finds it.
+        let (x0, cw) = view::column(Rect::new(0, 0, 20, 10), r.page_width());
+        let cx = view::column_x(x0, cw, 1).unwrap();
+        assert_eq!(
+            r.point_at(0, (20, 10), cx, 3),
+            Some(Pos { line: 0, offset: 4 })
+        );
     }
 
     #[test]

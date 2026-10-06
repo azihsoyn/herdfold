@@ -29,6 +29,10 @@ pub struct Entry {
     /// Which way the pages run, when set for this book with `D`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction: Option<Direction>,
+    /// Whether the book is set across or in vertical columns, when set
+    /// for this book with `V`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writing: Option<Writing>,
     /// How the book was last read, so the shelf can open it again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<crate::formats::Format>,
@@ -46,6 +50,16 @@ pub enum Direction {
     /// Bound on the right: the right page comes first (Japanese vertical
     /// text, manga).
     RightToLeft,
+}
+
+/// Which way the lines of a book are set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Writing {
+    /// In rows across, top to bottom.
+    Horizontal,
+    /// In columns down, right to left (tategaki).
+    Vertical,
 }
 
 /// A bookmark: where it is, and the colour of its ribbon.
