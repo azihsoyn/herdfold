@@ -1,3 +1,4 @@
+mod anchor;
 mod api;
 mod app;
 mod attach;
@@ -574,6 +575,7 @@ fn open(
     let dir = (file.as_os_str() != "-")
         .then(|| file.parent().map(|p| p.to_path_buf()))
         .flatten();
+    let digest = book.is_some().then(|| anchor::digest(&bytes));
     let doc = formats::load(format, bytes, &name, dir.as_deref())?;
     app::run(
         doc,
@@ -585,6 +587,7 @@ fn open(
             agent,
             format,
             start,
+            digest,
         },
     )
 }

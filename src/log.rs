@@ -226,7 +226,8 @@ pub fn summarize(records: &[Record]) -> Option<Summary> {
             | Event::BookmarkChanged { .. }
             | Event::BookmarkRemoved { .. }
             | Event::NoteChanged { .. }
-            | Event::NoteRemoved { .. } => {}
+            | Event::NoteRemoved { .. }
+            | Event::AnchorsChecked { .. } => {}
             Event::SessionEnded {
                 at,
                 pages_read,

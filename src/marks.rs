@@ -11,6 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::NAME;
+use crate::anchor::TextQuote;
 use crate::layout::Pos;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -33,6 +34,13 @@ pub struct Entry {
     /// for this book with `V`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writing: Option<Writing>,
+    /// The words where reading stopped, to find the place again if the
+    /// text moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<TextQuote>,
+    /// A digest of the book's bytes, to know it again if it is moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
     /// How the book was last read, so the shelf can open it again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<crate::formats::Format>,
@@ -67,11 +75,21 @@ pub enum Writing {
 }
 
 /// A bookmark: where it is, and the colour of its ribbon.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct Mark {
     pub at: Pos,
     #[serde(default)]
     pub color: Ribbon,
+    /// The words where the page began, to find it again if the text moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<TextQuote>,
+    /// Its words could not be found in the book as it is now.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub lost: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 // Bookmarks were once kept as bare places; those read as red ribbons.
@@ -84,14 +102,30 @@ impl<'de> Deserialize<'de> for Mark {
                 at: Pos,
                 #[serde(default)]
                 color: Ribbon,
+                #[serde(default)]
+                quote: Option<TextQuote>,
+                #[serde(default)]
+                lost: bool,
             },
             Bare(Pos),
         }
         Ok(match Kept::deserialize(d)? {
-            Kept::Mark { at, color } => Mark { at, color },
+            Kept::Mark {
+                at,
+                color,
+                quote,
+                lost,
+            } => Mark {
+                at,
+                color,
+                quote,
+                lost,
+            },
             Kept::Bare(at) => Mark {
                 at,
                 color: Ribbon::default(),
+                quote: None,
+                lost: false,
             },
         })
     }
@@ -155,6 +189,12 @@ pub struct Note {
     /// For a range, the colour of its highlighter; yellow when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<Ribbon>,
+    /// The words it is on, to find them again if the text moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<TextQuote>,
+    /// Its words could not be found in the book as it is now.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub lost: bool,
 }
 
 /// What a note is attached to.
@@ -293,6 +333,22 @@ fn read_store() -> Store {
 
 pub fn load(book: &str) -> Option<Entry> {
     read_store().books.remove(book)
+}
+
+/// The entry of a book moved or renamed: one kept under a file that is no
+/// longer there, for a book of the same `digest`. It is moved to `key`.
+pub fn adopt(key: &str, digest: &str) -> Option<Entry> {
+    let mut store = read_store();
+    let old = store
+        .books
+        .iter()
+        .find(|(k, e)| e.digest.as_deref() == Some(digest) && !std::path::Path::new(k).exists())
+        .map(|(k, _)| k.clone())?;
+    let entry = store.books.remove(&old)?;
+    store.books.insert(key.to_string(), entry.clone());
+    let path = path()?;
+    write_json(&path, &store).ok()?;
+    Some(entry)
 }
 
 /// Every book's entry, by the book's file.

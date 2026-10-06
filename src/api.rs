@@ -301,6 +301,10 @@ pub struct BookmarkInfo {
     pub color: Ribbon,
     /// The row the bookmarked page starts with.
     pub text: String,
+    /// Its words could not be found in the book as it is now; it is where
+    /// it was.
+    #[serde(default)]
+    pub lost: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -319,6 +323,9 @@ pub struct NoteInfo {
     pub quote: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<Ribbon>,
+    /// Its words could not be found in the book as it is now.
+    #[serde(default)]
+    pub lost: bool,
 }
 
 /// How the reader came to a place.
@@ -374,6 +381,8 @@ pub enum Subscription {
     QuestionAsked,
     #[serde(rename = "book.finished")]
     BookFinished,
+    #[serde(rename = "anchors.checked")]
+    AnchorsChecked,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -535,6 +544,7 @@ pub enum EventKind {
     SearchDone,
     QuestionAsked,
     BookFinished,
+    AnchorsChecked,
 }
 
 /// What happened. The reading log keeps these too, but for the pages shown
@@ -629,6 +639,12 @@ pub enum EventData {
     BookFinished {
         at: Place,
     },
+    /// The bookmarks and notes were checked against the book's text as it
+    /// is now: `moved` were found again elsewhere, `lost` not at all.
+    AnchorsChecked {
+        moved: usize,
+        lost: usize,
+    },
 }
 
 fn turned() -> Move {
@@ -653,6 +669,7 @@ impl EventData {
             Self::SearchDone { .. } => EventKind::SearchDone,
             Self::QuestionAsked { .. } => EventKind::QuestionAsked,
             Self::BookFinished { .. } => EventKind::BookFinished,
+            Self::AnchorsChecked { .. } => EventKind::AnchorsChecked,
         }
     }
 
@@ -690,6 +707,7 @@ impl EventEnvelope {
             EventKind::SearchDone => Subscription::SearchDone,
             EventKind::QuestionAsked => Subscription::QuestionAsked,
             EventKind::BookFinished => Subscription::BookFinished,
+            EventKind::AnchorsChecked => Subscription::AnchorsChecked,
         }
     }
 }

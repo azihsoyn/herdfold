@@ -76,6 +76,14 @@ on from one to the next. Elsewhere it shows one page at a time.
   about how long the rest of the book will take at your pace.
 - **Your place is kept** per book, as a position in the text rather than a
   page number, so it survives a change of pane size.
+- **Places follow their words.** Your place, bookmarks, notes and markers
+  each keep the words at them, and a few either side. If the book changes
+  (edited, a new edition, or read a little differently by a newer
+  herdfold), each is found again by its words when the book is opened; a
+  bookmark or a note on a row whose own words were reworded, by the words
+  around it. One that cannot be found stays where it was, marked `?` in
+  the list (`lost` in the API). A book moved or renamed is known by its
+  bytes, and keeps what was written in it.
 
 ## Marking
 
