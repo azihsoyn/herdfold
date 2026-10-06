@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use zip::ZipArchive;
 
 use super::xml::{self, Element, Node};
-use crate::doc::{Chapter, Document, Kind, Line, Picture};
+use crate::doc::{Chapter, Document, Kind, Line, Link, Picture, Run, Style};
 
 type Zip = ZipArchive<Cursor<Vec<u8>>>;
 
@@ -64,6 +64,7 @@ fn load_into(bytes: Vec<u8>, cache: Option<std::path::PathBuf>) -> Result<Docume
     let mut starts: HashMap<String, usize> = HashMap::new();
     let mut anchors: HashMap<(String, String), usize> = HashMap::new();
     let mut headings = Vec::new();
+    let mut links = Vec::new();
     for itemref in spine.elements().filter(|e| e.name == "itemref") {
         let Some(item) = itemref.attr("idref").and_then(|id| items.get(id)) else {
             continue;
@@ -80,6 +81,16 @@ fn load_into(bytes: Vec<u8>, cache: Option<std::path::PathBuf>) -> Result<Docume
         let pictures = std::mem::take(&mut html.pictures);
         for (id, line) in html.ids {
             anchors.insert((item.href.clone(), id), line);
+        }
+        for (line, start, end, href) in html.links {
+            // Where the link leads, as a file in the book and an id in it.
+            let (file, id) = href.split_once('#').unwrap_or((&href, ""));
+            let file = if file.is_empty() {
+                item.href.clone()
+            } else {
+                resolve(dir_of(&item.href), file)
+            };
+            links.push((line, start, end, file, id.to_string()));
         }
         headings.extend(html.headings);
         // Pictures are taken out of the book into the cache, to be set from
@@ -125,6 +136,20 @@ fn load_into(bytes: Vec<u8>, cache: Option<std::path::PathBuf>) -> Result<Docume
     }
     if doc.chapters.is_empty() {
         doc.chapters = headings;
+    }
+    for (line, start, end, file, id) in links {
+        let target = match id.as_str() {
+            "" => starts.get(&file),
+            id => anchors.get(&(file, id.to_string())),
+        };
+        if let Some(&target) = target {
+            doc.links.push(Link {
+                line,
+                start,
+                end,
+                target,
+            });
+        }
     }
     doc.rtl = rtl;
     while doc.lines.last().is_some_and(|l| l.text.is_empty()) {
@@ -326,6 +351,10 @@ struct Html<'a> {
     headings: Vec<Chapter>,
     /// Lines holding pictures, and where each picture's file is.
     pictures: Vec<(usize, String)>,
+    /// Links in the line being built: start, end, where they lead.
+    line_links: Vec<(usize, usize, String)>,
+    /// Links on lines set: line, start, end, where they lead.
+    links: Vec<(usize, usize, usize, String)>,
 }
 
 impl<'a> Html<'a> {
@@ -339,6 +368,8 @@ impl<'a> Html<'a> {
             ids: Vec::new(),
             headings: Vec::new(),
             pictures: Vec::new(),
+            line_links: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -411,10 +442,30 @@ impl<'a> Html<'a> {
             _ => {}
         }
 
+        // A link within the book; one to the web is only text.
+        let link = (name == "a")
+            .then(|| e.attr("href"))
+            .flatten()
+            .filter(|h| !h.contains(':'))
+            .map(|h| (self.lines.len(), self.cur.chars().count(), h.to_string()));
+
         for c in &e.children {
             match c {
                 Node::Text(t) => self.text(t),
                 Node::Element(c) => self.node(c),
+            }
+        }
+
+        if let Some((line, start, href)) = link
+            && line == self.lines.len()
+        {
+            // Spaces at the edges are not part of the link.
+            let text: Vec<char> = self.cur.chars().skip(start).collect();
+            let lead = text.iter().take_while(|c| **c == ' ').count();
+            let trail = text.iter().rev().take_while(|c| **c == ' ').count();
+            let (start, end) = (start + lead, start + text.len().saturating_sub(trail));
+            if start < end {
+                self.line_links.push((start, end, href));
             }
         }
 
@@ -461,8 +512,23 @@ impl<'a> Html<'a> {
         let only_marker = !self.cur.is_empty() && s.trim().is_empty();
         if (!s.is_empty() && !only_marker) || force {
             let kind = if self.pre > 0 { Kind::Pre } else { self.kind };
-            self.lines.push(Line::new(s, kind));
+            let mut line = Line::new(s, kind);
+            let at = self.lines.len();
+            for (start, end, href) in self.line_links.drain(..) {
+                let end = end.min(line.text.chars().count());
+                line.runs.push(Run {
+                    start,
+                    end,
+                    style: Style {
+                        underline: true,
+                        ..Style::default()
+                    },
+                });
+                self.links.push((at, start, end, href));
+            }
+            self.lines.push(line);
         }
+        self.line_links.clear();
         self.cur.clear();
         self.kind = Kind::Body;
     }
@@ -543,6 +609,58 @@ mod tests {
             &picture(image::ImageFormat::Jpeg, 30, 60),
         );
         zip.finish().unwrap().into_inner()
+    }
+
+    fn chars(s: &str, start: usize, end: usize) -> String {
+        s.chars().skip(start).take(end - start).collect()
+    }
+
+    fn epub(files: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in files {
+            zip.start_file(*name, opts).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn links_lead_across_the_book() {
+        let book = epub(&[
+            (
+                "META-INF/container.xml",
+                br#"<container><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>"#,
+            ),
+            (
+                "book.opf",
+                br#"<package><manifest><item id="a" href="a.xhtml"/><item id="b" href="b.xhtml"/></manifest><spine><itemref idref="a"/><itemref idref="b"/></spine></package>"#,
+            ),
+            (
+                "a.xhtml",
+                r#"<html><body><p>A word<a href="b.xhtml#n1"> 注1 </a> and <a href="b.xhtml">more</a>, <a href="https://x.org">web</a>.</p></body></html>"#.as_bytes(),
+            ),
+            (
+                "b.xhtml",
+                br#"<html><body><p>Start</p><aside id="n1"><p>The note.</p></aside></body></html>"#,
+            ),
+        ]);
+        let d = load(book).unwrap();
+        let at = |line: usize| d.lines[line].text.as_str();
+        let found: Vec<(String, &str)> = d
+            .links
+            .iter()
+            .map(|l| (chars(at(l.line), l.start, l.end), at(l.target)))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("注1".to_string(), "The note."),
+                ("more".to_string(), "Start")
+            ]
+        );
+        assert!(d.lines[0].style_at(7).underline);
     }
 
     #[test]

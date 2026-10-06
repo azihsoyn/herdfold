@@ -158,11 +158,25 @@ pub struct Chapter {
     pub line: usize,
 }
 
+/// A link from one place in the book to another, as the input gave it: a
+/// note reference to its note, a cross-reference to a heading.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Link {
+    pub line: usize,
+    /// Character offsets of the link's text in the line, as `Pos` counts.
+    pub start: usize,
+    pub end: usize,
+    /// The line it leads to.
+    pub target: usize,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Document {
     pub title: String,
     pub lines: Vec<Line>,
     pub chapters: Vec<Chapter>,
+    /// Links inside the book, in the order they appear.
+    pub links: Vec<Link>,
     /// The book says its pages run right to left (bound on the right).
     pub rtl: bool,
 }

@@ -6,7 +6,7 @@
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use unicode_width::UnicodeWidthStr;
 
-use crate::doc::{Chapter, Document, Kind, Line, Picture, Run, Style};
+use crate::doc::{Chapter, Document, Kind, Line, Link, Picture, Run, Style};
 
 #[cfg(test)]
 pub fn load(src: &str) -> Document {
@@ -15,8 +15,10 @@ pub fn load(src: &str) -> Document {
 
 /// Reads Markdown whose pictures are found relative to `dir`.
 pub fn load_in(src: &str, dir: Option<&std::path::Path>) -> Document {
-    let options =
-        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_FOOTNOTES;
     let mut r = Renderer {
         dir: dir.map(|d| d.to_path_buf()),
         ..Renderer::default()
@@ -53,6 +55,15 @@ struct Renderer {
     /// The picture being read, if it can be shown.
     picture: Option<Picture>,
     table: Option<Table>,
+    /// Links open in the line being built: where their text starts, and
+    /// where they lead.
+    open_links: Vec<(usize, String)>,
+    /// Links in the line being built: start, end, where they lead.
+    line_links: Vec<(usize, usize, String)>,
+    /// Links on lines already set, to be resolved once the book is read.
+    links: Vec<(usize, usize, usize, String)>,
+    /// The line each footnote's text begins on.
+    footnotes: std::collections::HashMap<String, usize>,
 }
 
 #[derive(Default)]
@@ -102,7 +113,13 @@ impl Renderer {
                     self.line_break();
                 }
             }
-            Event::FootnoteReference(t) => self.push(&format!("[^{t}]")),
+            Event::FootnoteReference(t) => {
+                let start = self.len;
+                self.inline.push(style(|s| s.underline = true));
+                self.push(&format!("[{t}]"));
+                self.inline.pop();
+                self.line_links.push((start, self.len, format!("^{t}")));
+            }
             Event::TaskListMarker(done) => {
                 // Replace the bullet just written with a box.
                 for _ in 0..2 {
@@ -167,7 +184,18 @@ impl Renderer {
             Tag::Emphasis => self.inline.push(style(|s| s.italic = true)),
             Tag::Strong => self.inline.push(style(|s| s.bold = true)),
             Tag::Strikethrough => self.inline.push(style(|s| s.strike = true)),
-            Tag::Link { .. } => self.inline.push(style(|s| s.underline = true)),
+            Tag::Link { dest_url, .. } => {
+                self.inline.push(style(|s| s.underline = true));
+                self.open_links.push((self.len, dest_url.to_string()));
+            }
+            Tag::FootnoteDefinition(label) => {
+                self.flush();
+                self.footnotes
+                    .insert(label.to_string(), self.doc.lines.len());
+                self.inline.push(style(|s| s.dim = true));
+                self.push(&format!("[{label}] "));
+                self.inline.pop();
+            }
             Tag::Image { dest_url, .. } => {
                 // A picture that can be shown gets lines of its own; its
                 // description is gathered as its text.
@@ -264,8 +292,20 @@ impl Renderer {
                 }
                 self.blank();
             }
-            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
+            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
                 self.inline.pop();
+            }
+            TagEnd::Link => {
+                self.inline.pop();
+                if let Some((start, dest)) = self.open_links.pop()
+                    && start <= self.len
+                {
+                    self.line_links.push((start, self.len, dest));
+                }
+            }
+            TagEnd::FootnoteDefinition => {
+                self.flush();
+                self.blank();
             }
             TagEnd::Image => {
                 self.push("]");
@@ -315,7 +355,16 @@ impl Renderer {
     /// Ends the line being built, if any.
     fn flush(&mut self) {
         if self.text.is_empty() {
+            self.line_links.clear();
             return;
+        }
+        let line = self.doc.lines.len();
+        for (start, end, dest) in self.line_links.drain(..) {
+            self.links.push((line, start, end, dest));
+        }
+        // A link running on past a break continues from the next line's start.
+        for (start, _) in &mut self.open_links {
+            *start = 0;
         }
         let kind = if self.heading {
             Kind::Heading
@@ -398,6 +447,28 @@ impl Renderer {
 
     fn finish(mut self) -> Document {
         self.flush();
+        // Links within the book: to a heading by its anchor, or to a footnote.
+        let headings: std::collections::HashMap<String, usize> = self
+            .doc
+            .chapters
+            .iter()
+            .map(|c| (slug(&c.title), c.line))
+            .collect();
+        for (line, start, end, dest) in std::mem::take(&mut self.links) {
+            let target = match (dest.strip_prefix('^'), dest.strip_prefix('#')) {
+                (Some(label), _) => self.footnotes.get(label),
+                (_, Some(anchor)) => headings.get(anchor),
+                _ => None,
+            };
+            if let Some(&target) = target {
+                self.doc.links.push(Link {
+                    line,
+                    start,
+                    end,
+                    target,
+                });
+            }
+        }
         while self.doc.lines.last().is_some_and(|l| l.text.is_empty()) {
             self.doc.lines.pop();
         }
@@ -412,12 +483,49 @@ impl Renderer {
     }
 }
 
+/// The anchor a heading is linked by, as GitHub makes it: lower case,
+/// spaces as hyphens, other punctuation dropped.
+fn slug(title: &str) -> String {
+    title
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn texts(src: &str) -> Vec<String> {
         load(src).lines.into_iter().map(|l| l.text).collect()
+    }
+
+    #[test]
+    fn links_lead_to_headings_and_footnotes() {
+        let d = load(
+            "# Top\n\n日本語の [the end](#the-end), or a note.[^n]\n\n## The end\n\n[^n]: The note.\n",
+        );
+        let at = |line: usize| d.lines[line].text.as_str();
+        let [to_heading, to_note] = d.links[..] else {
+            panic!("links: {:?}", d.links);
+        };
+        let chars = |l: crate::doc::Link| -> String {
+            at(l.line)
+                .chars()
+                .skip(l.start)
+                .take(l.end - l.start)
+                .collect()
+        };
+        assert_eq!(chars(to_heading), "the end");
+        assert_eq!(at(to_heading.target), "The end");
+        assert_eq!(chars(to_note), "[n]");
+        assert_eq!(at(to_note.target), "[n] The note.");
     }
 
     #[test]
