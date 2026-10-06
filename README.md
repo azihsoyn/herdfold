@@ -31,9 +31,12 @@ on from one to the next. Elsewhere it shows one page at a time.
 - **Formats are named, never guessed**: `text`, `md` (rendered: headings,
   emphasis, lists, quotes, code blocks, tables fitted to the page with
   their cells wrapped), `diff` (each file a chapter, additions and
-  removals coloured; stdin works), `epub`, and `aozora` (Aozora Bunko's
+  removals coloured; stdin works), `epub`, `aozora` (Aozora Bunko's
   text, in Shift_JIS or UTF-8; the headings its notes name are the
-  chapters).
+  chapters), and `pdf-text` (a PDF's text set again as pages of the book:
+  paragraphs joined across its pages, hyphenated words made whole, running
+  heads and page numbers left out, its outline the chapters; columns,
+  figures and formulas are not kept, and a scanned PDF has no text).
 - **Code is highlighted** by its language, with the grammars bat
   bundles: a Markdown fence's language, an EPUB's `language-…` or
   `sourceCode …` class, a diff's file extension. The default theme, `ansi`,
@@ -209,7 +212,8 @@ run.
 
 - It never reads the text for meaning: pages are cut by height, and
   chapters come only from the input (an EPUB's table of contents, Markdown
-  headings, the files of a diff, Aozora's heading notes). Plain text has
+  headings, the files of a diff, Aozora's heading notes, a PDF's
+  outline). Plain text has
   none, and none are guessed.
 - It never guesses the format.
 - It never scrolls. Only turning.
