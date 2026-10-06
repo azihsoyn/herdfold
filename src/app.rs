@@ -1467,30 +1467,26 @@ impl Reader {
             .saturating_sub(view::TOP as usize + self.layout.pad(n))
             .min(rows.len() - 1);
         let r = &rows[i];
-        let line: Vec<char> = self.doc.lines[r.pos.line].text.chars().collect();
-        let mut x = (col as usize).saturating_sub(x0 as usize);
+        let x = (col as usize).saturating_sub(x0 as usize);
         if x < r.lead_width {
             return Some(r.pos);
         }
-        x -= r.lead_width;
+        let x = x - r.lead_width;
+        // The character under the pointer, counted after the lead.
+        let shown: Vec<char> = r.text.chars().skip(r.lead).collect();
         let mut used = 0;
-        for k in 0..r.len {
-            let w = line
-                .get(r.pos.offset + k)
-                .map(|c| unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0))
-                .unwrap_or(1);
+        let mut k = shown.len().saturating_sub(1);
+        for (n, c) in shown.iter().enumerate() {
+            let w = unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
             if x < used + w {
-                return Some(Pos {
-                    line: r.pos.line,
-                    offset: r.pos.offset + k,
-                });
+                k = n;
+                break;
             }
             used += w;
         }
-        // Past the end of the row's text: its last character.
         Some(Pos {
             line: r.pos.line,
-            offset: r.pos.offset + r.len.saturating_sub(1),
+            offset: nearest_source(r, k),
         })
     }
 
@@ -1523,7 +1519,7 @@ impl Reader {
             None => r.pos,
             Some(k) => Pos {
                 line: r.pos.line,
-                offset: r.pos.offset + k.min(r.len.saturating_sub(1)),
+                offset: nearest_source(r, k),
             },
         })
     }
@@ -2480,6 +2476,19 @@ impl Reader {
     }
 }
 
+/// The place in the line of row `r`'s `k`-th character after its lead, or
+/// of the nearest character before it (after it, failing that) that has
+/// one: padding and rules in a table come from nowhere.
+fn nearest_source(r: &crate::layout::Row, k: usize) -> usize {
+    let shown = r.text.chars().count().saturating_sub(r.lead);
+    let k = k.min(shown.saturating_sub(1));
+    (0..=k)
+        .rev()
+        .find_map(|n| r.source(n))
+        .or_else(|| (k..shown).find_map(|n| r.source(n)))
+        .unwrap_or(r.pos.offset)
+}
+
 /// Fills the two pages' progress bars as one bar across the spread, from
 /// the outer edge of the page read first, to the last open page.
 fn spread_bar(left: &mut PageView, right: &mut PageView, rtl: bool) {
@@ -2513,10 +2522,13 @@ fn paint_row(row: &mut PageRow, r: &crate::layout::Row, from: Pos, to: Pos, styl
         .iter()
         .flat_map(|s| s.text.chars().map(move |c| (c, s.style)))
         .collect();
-    for (k, cell) in cells.iter_mut().enumerate().skip(r.lead).take(r.len) {
+    for (k, cell) in cells.iter_mut().skip(r.lead).enumerate() {
+        let Some(offset) = r.source(k) else {
+            continue;
+        };
         let at = Pos {
             line: r.pos.line,
-            offset: r.pos.offset + k - r.lead,
+            offset,
         };
         if from <= at && at < to {
             cell.1 = cell.1.with(style);
@@ -3500,6 +3512,38 @@ mod tests {
             r.point_at(0, (20, 10), cx, 3),
             Some(Pos { line: 0, offset: 4 })
         );
+    }
+
+    #[test]
+    fn a_find_in_a_wrapped_table_cell_is_lit_where_it_is_drawn() {
+        let mut r = reader(&["x"], 1);
+        r.doc = crate::formats::load(
+            crate::formats::Format::Md,
+            b"| id | text |\n|---|---|\n| 1 | a long cell that will not fit |\n".to_vec(),
+            "t",
+            None,
+        )
+        .unwrap();
+        r.laid_for = None;
+        r.fit((20, 20), false);
+        keys(&mut r, &["/", "w", "i", "l", "l"]);
+        let rows = r.views().0.rows;
+        let lit: Vec<String> = rows
+            .iter()
+            .filter_map(|row| {
+                let found: String = row
+                    .spans
+                    .iter()
+                    .filter(|s| s.style.found)
+                    .map(|s| s.text.as_str())
+                    .collect();
+                (!found.is_empty()).then_some(found)
+            })
+            .collect();
+        assert_eq!(lit, ["will"]);
+        let row = rows.iter().find(|row| row.pointer).unwrap();
+        let text: String = row.spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(text.trim_end(), "   │ that will not");
     }
 
     #[test]

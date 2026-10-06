@@ -16,6 +16,10 @@ pub enum Kind {
     /// A picture, set on rows of its own; the line's text is its
     /// description, shown in its place where pictures cannot be.
     Image,
+    /// A row of a table: its cells (`Line::cells`) are set in columns
+    /// shared with the table's other rows, each wrapped within its column.
+    /// A table row with no cells is the rule under the head.
+    Table,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -112,6 +116,8 @@ pub struct Line {
     pub gutter: String,
     /// For a picture, the picture.
     pub image: Option<Picture>,
+    /// For a table row, where each cell's text is, in characters.
+    pub cells: Vec<std::ops::Range<usize>>,
 }
 
 /// A picture to set in the book: an image file and its size in pixels.
@@ -151,6 +157,7 @@ impl Line {
             hang: None,
             gutter: String::new(),
             image: None,
+            cells: Vec::new(),
         }
     }
 

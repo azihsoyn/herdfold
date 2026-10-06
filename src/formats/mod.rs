@@ -4,7 +4,7 @@
 mod aozora;
 mod diff;
 mod epub;
-mod md;
+pub(crate) mod md;
 mod text;
 mod xml;
 

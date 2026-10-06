@@ -2,7 +2,7 @@
 //! fixed height. Mechanical: where a page ends depends on the size of the
 //! page and on the chapters the input declared, never on what the text says.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,21 @@ pub struct Row {
     pub len: usize,
     /// On the first row of a picture: the columns and rows it is set in.
     pub picture: Option<(u16, u16)>,
+    /// Where each character after the lead comes from in the line, for a
+    /// row that is not one stretch of it (a table's, its cells side by
+    /// side); `None` for padding and rules.
+    pub map: Option<Vec<Option<usize>>>,
+}
+
+impl Row {
+    /// Where in the line the row's `k`-th character after its lead comes
+    /// from, if anywhere.
+    pub fn source(&self, k: usize) -> Option<usize> {
+        match &self.map {
+            Some(map) => map.get(k).copied().flatten(),
+            None => (k < self.len).then_some(self.pos.offset + k),
+        }
+    }
 }
 
 pub struct Layout {
@@ -73,12 +88,16 @@ impl Layout {
     ) -> Self {
         let width = width.max(1);
         let height = height.max(1);
+        let tables = table_columns(doc, width);
         let mut rows: Vec<Row> = doc
             .lines
             .iter()
             .enumerate()
             .flat_map(|(i, line)| match (&line.image, cell) {
                 (Some(picture), Some(cell)) => picture_rows(i, picture, width, height, cell),
+                _ if line.kind == Kind::Table => {
+                    table_rows(i, line, tables.get(&i).map_or(&[][..], Vec::as_slice))
+                }
                 _ => set(i, line, width),
             })
             .collect();
@@ -92,6 +111,7 @@ impl Layout {
                 lead_width: 0,
                 len: 0,
                 picture: None,
+                map: None,
             });
         }
         // Rows of footnote each row carries: the notes on it.
@@ -295,6 +315,7 @@ fn picture_rows(
             lead_width: 0,
             len: 0,
             picture: (k == 0).then_some((cols as u16, rows as u16)),
+            map: None,
         })
         .collect()
 }
@@ -318,6 +339,7 @@ pub fn set(i: usize, line: &Line, width: usize) -> Vec<Row> {
         lead_width: lead.width(),
         len,
         picture: None,
+        map: None,
     };
     if line.kind == Kind::Rule {
         let c = line.text.chars().next().unwrap_or('─');
@@ -369,6 +391,193 @@ pub fn set(i: usize, line: &Line, width: usize) -> Vec<Row> {
                 " ".repeat(p.prefix)
             );
             row(p.start, spans, &lead, p.end - p.start)
+        })
+        .collect()
+}
+
+/// Columns between table cells.
+const CELL_GAP: &str = " │ ";
+/// Narrowest a table column is squeezed to.
+const MIN_COLUMN: usize = 4;
+
+/// The column widths of each table, by the lines of its rows: each column
+/// as wide as its widest cell, unless the table is wider than `width`;
+/// then the narrow columns keep their width and the wide ones share what
+/// is left.
+fn table_columns(doc: &Document, width: usize) -> HashMap<usize, Vec<usize>> {
+    let mut out = HashMap::new();
+    let mut i = 0;
+    while i < doc.lines.len() {
+        if doc.lines[i].kind != Kind::Table {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < doc.lines.len() && doc.lines[i].kind == Kind::Table {
+            i += 1;
+        }
+        let lines = &doc.lines[start..i];
+        let cols = lines.iter().map(|l| l.cells.len()).max().unwrap_or(0);
+        let natural: Vec<usize> = (0..cols)
+            .map(|c| {
+                lines
+                    .iter()
+                    .filter_map(|l| l.cells.get(c).map(|r| cell_text(l, r).width()))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        let gutter = lines[0].gutter.width();
+        let room = width.saturating_sub(gutter + CELL_GAP.width() * cols.saturating_sub(1));
+        let widths = fit_columns(&natural, room);
+        for k in start..i {
+            out.insert(k, widths.clone());
+        }
+    }
+    out
+}
+
+fn cell_text(line: &Line, r: &std::ops::Range<usize>) -> String {
+    line.text
+        .chars()
+        .skip(r.start)
+        .take(r.end - r.start)
+        .collect()
+}
+
+/// `natural` column widths fitted into `room`: those under an equal share
+/// keep their width; the rest split what is left.
+fn fit_columns(natural: &[usize], room: usize) -> Vec<usize> {
+    if natural.iter().sum::<usize>() <= room {
+        return natural.to_vec();
+    }
+    let mut widths = natural.to_vec();
+    let mut kept = vec![false; natural.len()];
+    loop {
+        let used: usize = (0..natural.len())
+            .filter(|&c| kept[c])
+            .map(|c| widths[c])
+            .sum();
+        let free: Vec<usize> = (0..natural.len()).filter(|&c| !kept[c]).collect();
+        if free.is_empty() {
+            return widths;
+        }
+        let left = room.saturating_sub(used);
+        let share = left / free.len();
+        let fits: Vec<usize> = free
+            .iter()
+            .copied()
+            .filter(|&c| natural[c] <= share)
+            .collect();
+        if fits.is_empty() {
+            let spare = left - share * free.len();
+            for (n, &c) in free.iter().enumerate() {
+                widths[c] = (share + usize::from(n < spare)).max(MIN_COLUMN);
+            }
+            return widths;
+        }
+        for c in fits {
+            kept[c] = true;
+        }
+    }
+}
+
+/// A table row's rows on the page: its cells side by side in their
+/// columns, each wrapped within its own; or, for the rule under the head,
+/// a rule across the columns.
+fn table_rows(i: usize, line: &Line, widths: &[usize]) -> Vec<Row> {
+    let dim = Style {
+        dim: true,
+        ..Style::default()
+    };
+    let gutter = (!line.gutter.is_empty()).then(|| Styled {
+        text: line.gutter.clone(),
+        style: dim,
+    });
+    let row = |offset: usize, spans: Vec<Styled>, len: usize, map: Vec<Option<usize>>| Row {
+        pos: Pos { line: i, offset },
+        text: spans.iter().map(|s| s.text.as_str()).collect(),
+        spans,
+        kind: Kind::Table,
+        lead: line.gutter.chars().count(),
+        lead_width: line.gutter.width(),
+        len,
+        picture: None,
+        map: Some(map),
+    };
+    if line.cells.is_empty() {
+        let rule: Vec<String> = widths.iter().map(|&w| "─".repeat(w)).collect();
+        let rule = Styled {
+            text: rule.join("─┼─"),
+            style: dim,
+        };
+        let n = rule.text.chars().count();
+        return vec![row(
+            0,
+            gutter.into_iter().chain([rule]).collect(),
+            0,
+            vec![None; n],
+        )];
+    }
+    let chars: Vec<char> = line.text.chars().collect();
+    // Each cell broken into rows within its column, as character ranges.
+    let pieces: Vec<Vec<std::ops::Range<usize>>> = widths
+        .iter()
+        .enumerate()
+        .map(|(c, &w)| {
+            let Some(cell) = line.cells.get(c) else {
+                return Vec::new();
+            };
+            let text = &chars[cell.start..cell.end.min(chars.len())];
+            if text.is_empty() {
+                return Vec::new();
+            }
+            pieces(text, w, Kind::Body, Some(0))
+                .into_iter()
+                .map(|p| cell.start + p.start..cell.start + p.end)
+                .collect()
+        })
+        .collect();
+    let height = pieces.iter().map(Vec::len).max().unwrap_or(0).max(1);
+    (0..height)
+        .map(|k| {
+            let mut spans: Vec<Styled> = gutter.iter().cloned().collect();
+            let mut map = Vec::new();
+            let push = |spans: &mut Vec<Styled>, c: char, style: Style| match spans.last_mut() {
+                Some(last) if last.style == style => last.text.push(c),
+                _ => spans.push(Styled {
+                    text: c.to_string(),
+                    style,
+                }),
+            };
+            for (c, &w) in widths.iter().enumerate() {
+                let mut used = 0;
+                if let Some(piece) = pieces[c].get(k) {
+                    for j in piece.clone() {
+                        push(&mut spans, chars[j], line.style_at(j));
+                        map.push(Some(j));
+                        used += width_of(chars[j]);
+                    }
+                }
+                let last = c + 1 == widths.len();
+                if !last {
+                    for _ in used..w {
+                        push(&mut spans, ' ', line.style);
+                        map.push(None);
+                    }
+                    for g in CELL_GAP.chars() {
+                        push(&mut spans, g, dim);
+                        map.push(None);
+                    }
+                }
+            }
+            // The row starts where its first piece does; the first row, at
+            // the line's start, so the line is found there.
+            let starts = pieces.iter().filter_map(|p| p.get(k).map(|r| r.start));
+            let ends = pieces.iter().filter_map(|p| p.get(k).map(|r| r.end));
+            let offset = if k == 0 { 0 } else { starts.min().unwrap_or(0) };
+            let len = ends.max().unwrap_or(offset).saturating_sub(offset);
+            row(offset, spans, len, map)
         })
         .collect()
 }
@@ -507,6 +716,66 @@ mod tests {
             .into_iter()
             .map(|(_, s)| s)
             .collect()
+    }
+
+    fn table(src: &str, width: usize) -> Vec<String> {
+        let d = crate::formats::md::load(src);
+        Layout::new(&d, width, 100)
+            .rows
+            .iter()
+            .filter(|r| r.kind == Kind::Table)
+            .map(|r| r.text.trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_table_that_fits_keeps_its_columns() {
+        assert_eq!(
+            table("| a | bb |\n|---|---|\n| ccc | d |\n", 40),
+            ["a   │ bb", "────┼───", "ccc │ d"]
+        );
+    }
+
+    #[test]
+    fn a_wide_table_wraps_within_its_columns() {
+        let src = "| id | text |\n|---|---|\n| 1 | a long cell that will not fit |\n";
+        assert_eq!(
+            table(src, 20),
+            [
+                "id │ text",
+                "───┼────────────────",
+                "1  │ a long cell",
+                "   │ that will not",
+                "   │ fit",
+            ]
+        );
+    }
+
+    #[test]
+    fn table_rows_map_back_to_their_cells() {
+        let d = crate::formats::md::load("| ab | cd ef |\n|---|---|\n");
+        let l = Layout::new(&d, 9, 100);
+        let first = &l.rows[0];
+        // "ab │ cd" / "   │ ef": the second row's text is the second cell's.
+        assert_eq!(first.source(0), Some(0));
+        assert_eq!(first.source(2), None, "the gap between cells");
+        assert_eq!(first.source(5), Some(5));
+        let second = &l.rows[1];
+        assert_eq!(second.text, "   │ ef");
+        assert_eq!(second.pos.offset, 8);
+        assert_eq!(second.source(5), Some(8));
+        assert!(l.rows[0].pos < l.rows[1].pos);
+    }
+
+    #[test]
+    fn columns_share_what_room_there_is() {
+        assert_eq!(fit_columns(&[3, 30, 40], 50), [3, 24, 23]);
+        assert_eq!(fit_columns(&[3, 4], 50), [3, 4]);
+        assert_eq!(
+            fit_columns(&[30, 30, 30], 6),
+            [4, 4, 4],
+            "never below the least"
+        );
     }
 
     #[test]
