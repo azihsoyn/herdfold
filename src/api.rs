@@ -104,7 +104,9 @@ pub enum Call {
     QuestionAsk(QuestionAskParams),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnDirection {
     Forward,

@@ -5,7 +5,8 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use crate::api::{self, ErrorResponse, PROTOCOL, SCHEMA_VERSION};
+use crate::api::{self, Call, ErrorResponse, PROTOCOL, SCHEMA_VERSION, Subscription};
+use crate::client::Client;
 
 #[derive(Debug)]
 pub struct CliError {
@@ -36,6 +37,97 @@ pub fn finish(id: &str, result: Result<(), CliError>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Sends `call` to the reader and prints its answer, as herdr's commands
+/// print theirs: `{"id":"cli:<id>","result":{..}}`.
+pub fn call(id: &'static str, call: Call) -> Result<(), CliError> {
+    let mut client = Client::connect(id)?;
+    let result = client.call(call)?;
+    println!(
+        "{}",
+        serde_json::json!({ "id": format!("cli:{id}"), "result": result })
+    );
+    Ok(())
+}
+
+/// `herdfold reader list`: the readers open, each with what it has open.
+pub fn readers() -> Result<(), CliError> {
+    let readers: Vec<serde_json::Value> = crate::client::readers()
+        .into_iter()
+        .filter_map(|path| {
+            let mut client = Client::connect_to(&path, "reader:list").ok()?;
+            let state = client.call(Call::ReaderState(api::EmptyParams {})).ok()?;
+            let api::ResponseResult::ReaderState { state } = state else {
+                return None;
+            };
+            Some(serde_json::json!({ "socket": path, "state": state }))
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::json!({
+            "id": "cli:reader:list",
+            "result": { "type": "readers", "readers": readers },
+        })
+    );
+    Ok(())
+}
+
+/// `herdfold events [TYPE...]`: the reader's events, one JSON line each, as
+/// they happen, until it closes. Every kind when none is named.
+pub fn events(types: Vec<String>) -> Result<(), CliError> {
+    let all = [
+        "page.shown",
+        "reader.closed",
+        "session.started",
+        "session.ended",
+        "reader.moved",
+        "settings.changed",
+        "bookmark.added",
+        "bookmark.changed",
+        "bookmark.removed",
+        "note.added",
+        "note.changed",
+        "note.removed",
+        "search.done",
+        "question.asked",
+        "book.finished",
+    ];
+    let types: Vec<String> = if types.is_empty() {
+        all.iter()
+            .filter(|t| **t != "page.shown")
+            .map(|t| t.to_string())
+            .collect()
+    } else {
+        types
+    };
+    let subscriptions = types
+        .iter()
+        .map(|t| {
+            serde_json::from_value::<Subscription>(serde_json::json!({ "type": t })).map_err(|_| {
+                CliError::new(
+                    "invalid_params",
+                    format!("no event {t:?}; there are: {}", all.join(", ")),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut client = Client::connect("events")?;
+    client.call(Call::EventsSubscribe(api::EventsSubscribeParams {
+        subscriptions,
+    }))?;
+    for msg in client.incoming.iter() {
+        if let api::Incoming::Event(e) = msg {
+            let line =
+                serde_json::to_string(&e).map_err(|e| CliError::new("internal", e.to_string()))?;
+            println!("{line}");
+            if e.data == api::EventData::ReaderClosed {
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `herdfold api schema [--json | --output PATH]`

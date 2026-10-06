@@ -153,13 +153,24 @@ fn serve(id: ConnId, stream: UnixStream, hub: Hub, tx: Sender<Inbound>) {
     });
 }
 
+/// Where readers keep their sockets: one directory a user, short enough
+/// for a socket path (about 104 bytes on macOS), the same whatever a
+/// process's `TMPDIR` is, so other processes can find them.
+pub fn socket_dir() -> PathBuf {
+    use std::os::unix::fs::MetadataExt;
+    // The user, as the owner of their home.
+    let uid = std::env::var_os("HOME")
+        .and_then(|h| fs::metadata(h).ok())
+        .map_or(0, |m| m.uid());
+    PathBuf::from("/tmp").join(format!("{NAME}-{uid}"))
+}
+
 fn socket_path() -> PathBuf {
-    let name = format!("{NAME}-{}.sock", std::process::id());
-    let tmp = std::env::temp_dir();
-    // Unix socket paths are limited to ~104 bytes on macOS.
-    if tmp.as_os_str().len() + name.len() < 100 {
-        tmp.join(name)
-    } else {
-        PathBuf::from("/tmp").join(name)
+    let dir = socket_dir();
+    let _ = fs::create_dir_all(&dir);
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     }
+    dir.join(format!("{}.sock", std::process::id()))
 }

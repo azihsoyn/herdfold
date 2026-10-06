@@ -1,5 +1,6 @@
-//! A client of a reader's socket, found through `HERDFOLD_SOCKET_PATH`:
-//! requests in herdr's shape, answers matched to them by id.
+//! A client of a reader's socket: the one `HERDFOLD_SOCKET_PATH` names, else
+//! the one reader open on this machine. Requests in herdr's shape, answers
+//! matched to them by id.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -12,6 +13,37 @@ use crate::cli::CliError;
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The sockets of the readers open on this machine (those that answer).
+pub fn readers() -> Vec<std::path::PathBuf> {
+    let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(crate::server::socket_dir())
+        .map(|d| d.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    found.retain(|p| {
+        p.extension().is_some_and(|e| e == "sock") && UnixStream::connect(p).is_ok()
+    });
+    found.sort();
+    found
+}
+
+/// The reader to talk to: the one `HERDFOLD_SOCKET_PATH` names, else the
+/// only one open.
+fn socket() -> Result<std::path::PathBuf, CliError> {
+    if let Some(path) = std::env::var_os(SOCKET_ENV) {
+        return Ok(path.into());
+    }
+    let mut open = readers();
+    match open.len() {
+        1 => Ok(open.remove(0)),
+        0 => Err(CliError::new("reader_not_found", "no reader is open")),
+        n => Err(CliError::new(
+            "ambiguous_reader",
+            format!(
+                "{n} readers are open; set {SOCKET_ENV} to one (`herdfold reader list` shows them)"
+            ),
+        )),
+    }
+}
+
 pub struct Client {
     writer: UnixStream,
     pub incoming: Receiver<Incoming>,
@@ -23,12 +55,15 @@ pub struct Client {
 impl Client {
     /// Connects, and checks with `ping` that the reader speaks this protocol.
     pub fn connect(name: &'static str) -> Result<Self, CliError> {
-        let path = std::env::var_os(SOCKET_ENV)
-            .ok_or_else(|| CliError::new("reader_not_found", format!("{SOCKET_ENV} is not set")))?;
+        Self::connect_to(&socket()?, name)
+    }
+
+    /// Connects to the reader at `path`.
+    pub fn connect_to(path: &std::path::Path, name: &'static str) -> Result<Self, CliError> {
         let stream = UnixStream::connect(&path).map_err(|e| {
             CliError::new(
                 "reader_not_found",
-                format!("no reader at {}: {e}", path.to_string_lossy()),
+                format!("no reader at {}: {e}", path.display()),
             )
         })?;
         let writer = stream.try_clone().map_err(CliError::io)?;

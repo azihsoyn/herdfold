@@ -42,7 +42,9 @@ pub struct Entry {
 }
 
 /// Which way a book's pages run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     /// Bound on the left: the left page comes first (Western books).
@@ -53,7 +55,9 @@ pub enum Direction {
 }
 
 /// Which way the lines of a book are set.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Writing {
     /// In rows across, top to bottom.
@@ -94,7 +98,9 @@ impl<'de> Deserialize<'de> for Mark {
 }
 
 /// Colours a bookmark ribbon comes in, in the order `c` steps through them.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Ribbon {
     #[default]
@@ -218,7 +224,9 @@ pub struct Settings {
 }
 
 /// Where a note's text is shown on its page.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum NoteDisplay {
     /// At the foot of the page, under a short rule.
