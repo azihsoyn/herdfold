@@ -38,5 +38,6 @@ pub fn params(
         anchor,
         by,
         question,
+        color: None,
     }
 }

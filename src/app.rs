@@ -15,14 +15,16 @@ use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
 use crate::api::{
-    Call, EventData, MouseKind, PROTOCOL, ReaderMouseParams, Request, ResponseResult, SOCKET_ENV,
+    BookmarkAddParams, BookmarkUpdateParams, Call, EmptyParams, EventData, IndexParams, MouseKind,
+    NoteAddParams, NoteUpdateParams, PROTOCOL, QuestionAskParams, ReaderGoToParams,
+    ReaderMouseParams, ReaderSetParams, ReaderTurnParams, Request, ResponseResult, SOCKET_ENV,
+    TurnDirection,
 };
 use crate::doc::Document;
 use crate::doc::{Kind, Line as DocLine, Style as TextStyle};
 use crate::herdr::{self, RightPane};
 use crate::keys::{self, Keymap};
 use crate::layout::{Layout, Pos};
-use crate::log::Event as Logged;
 use crate::marks::{
     self, Anchor, Author, Direction, Entry, Mark, Note, NoteDisplay, Ribbon, Writing,
 };
@@ -30,6 +32,8 @@ use crate::pictures::Pictures;
 use crate::server::{ConnId, Hub, Inbound, Server};
 use crate::turn::{Turn, Turning};
 use crate::view::{self, Cmd, MarginNote, PageRow, PageView, Side};
+
+mod calls;
 
 /// How long a passing message stays up.
 const TOAST: Duration = Duration::from_millis(2000);
@@ -160,14 +164,37 @@ struct Reader {
     folded: std::collections::BTreeSet<usize>,
     /// Places left by jumps (contents, list, search), the latest last.
     trail: Vec<Pos>,
-    /// The reading log of this session; none under test.
+    /// The reading log of this session, kept from the events sent; none
+    /// under test.
     log: Option<crate::log::Log>,
+    /// Events not yet sent to subscribers and the log.
+    outbox: Vec<crate::api::EventData>,
+    /// The book, as the API names it.
+    book_info: crate::api::Book,
+    /// How the reader is coming to the next place: by turning, a jump, or
+    /// back along the trail.
+    moving: Option<crate::api::Move>,
+    /// The session so far.
+    session: Session,
+    /// Closing, as `reader.close` asked.
+    closing: bool,
     /// Seconds a page usually takes, from the reading log.
     pace: Option<f64>,
     /// Where this reader's socket is, for an agent to write notes back.
     socket: Option<PathBuf>,
     /// Outcomes of work done off the main loop (asking the agent).
     background: (Sender<String>, Receiver<String>),
+}
+
+/// What a session has seen, for its events.
+#[derive(Default)]
+struct Session {
+    started: Option<Instant>,
+    /// Pages shown, from 1.
+    pages: std::collections::BTreeSet<usize>,
+    /// The last place sent as reached.
+    last: Option<Pos>,
+    finished: bool,
 }
 
 /// Everything the left pane's frame is drawn from, so an unchanged frame
@@ -248,7 +275,12 @@ pub fn run(doc: Document, book: Option<String>, opening: Opening) -> Result<()> 
         folded: Default::default(),
         trail: Vec::new(),
         pace: crate::log::pace(log_book.key.as_deref()),
-        log: Some(crate::log::Log::new(log_book)),
+        log: Some(crate::log::Log::new()),
+        outbox: Vec::new(),
+        book_info: log_book,
+        moving: None,
+        session: Session::default(),
+        closing: false,
         chapter_pages: Vec::new(),
         spread: false,
         mode: Mode::Reading,
@@ -351,20 +383,7 @@ impl Reader {
                 view::text_size(size.0, size.1, self.measure)
             };
             self.fit(text, self.attached.is_some());
-            // Pages passed through while typing a search are not read.
-            if !matches!(
-                self.mode,
-                Mode::Search {
-                    typing: Some(_),
-                    ..
-                }
-            ) {
-                let at = self.place(self.entry.at);
-                let at_end = self.page() + self.step() >= self.layout.page_count();
-                if let Some(log) = &mut self.log {
-                    log.shown(at, at_end);
-                }
-            }
+            self.track();
 
             let (left, right) = self.views();
             let left_now = left.clone();
@@ -454,17 +473,16 @@ impl Reader {
             }
             for (key, right) in std::mem::take(&mut keys) {
                 if self.handle_key(&key, right) {
-                    self.save();
-                    let at = self.place(self.entry.at);
-                    if let Some(log) = &mut self.log {
-                        log.end(at);
-                    }
-                    if let Some(s) = server {
-                        s.hub.emit(EventData::ReaderClosed);
-                    }
-                    return Ok(());
+                    self.closing = true;
                 }
             }
+            if self.closing {
+                self.save();
+                self.end_session();
+                self.flush(server);
+                return Ok(());
+            }
+            self.flush(server);
         }
     }
 
@@ -520,29 +538,10 @@ impl Reader {
                     return hub.fail(conn, id, "not_attached", "reader.attach first");
                 }
             },
-            Call::NoteAdd(p) => {
-                if p.text.trim().is_empty() {
-                    return hub.fail(conn, id, "invalid_params", "a note needs text");
-                }
-                let at = p.at.unwrap_or_else(|| self.layout.start_of(self.page()));
-                let page = self.layout.page_of(at) + 1;
-                self.add_note(Note {
-                    at,
-                    anchor: p.anchor,
-                    text: p.text.trim().to_string(),
-                    by: p.by,
-                    question: p.question,
-                    end: p.end,
-                    color: None,
-                });
-                self.notes_rev += 1;
-                self.say(match p.by {
-                    Author::Agent => format!("A note from the agent on p.{page}"),
-                    Author::Reader => format!("Note kept on p.{page}"),
-                });
-                self.save();
-                ResponseResult::NoteAdded { page }
-            }
+            call => match self.call(call) {
+                Ok(result) => result,
+                Err(e) => return hub.fail(conn, id, e.code, e.message),
+            },
         };
         hub.reply(conn, id, result);
     }
@@ -985,12 +984,7 @@ impl Reader {
                 match cmd {
                     Cmd::Enter | Cmd::Follow => {
                         self.mode = Mode::Reading;
-                        let target = Pos {
-                            line: self.doc.links[i].target,
-                            offset: 0,
-                        };
-                        let page = self.layout.page_of(target);
-                        self.jump(page);
+                        self.act(Call::LinkFollow(IndexParams { index: i }));
                     }
                     Cmd::Quit => return true,
                     _ => self.mode = Mode::Reading,
@@ -1041,54 +1035,48 @@ impl Reader {
         let page = self.page();
         // The page in the pane the key was pressed in.
         let here = self.pane_page(right);
+        let set = |p: ReaderSetParams| Call::ReaderSet(p);
         match cmd {
-            Cmd::Next => {
-                if page + self.step() < self.layout.page_count() {
-                    self.turn_to(page + self.step(), Turn::Forward);
-                }
-            }
-            Cmd::Prev => {
-                if page > 0 {
-                    self.turn_to(page.saturating_sub(self.step()), Turn::Backward);
-                }
-            }
-            Cmd::Mark => self.toggle_mark(here),
-            Cmd::Animate => self.toggle_animation(),
-            Cmd::NoteDisplay => self.cycle_note_display(),
+            Cmd::Next | Cmd::Prev => self.act(Call::ReaderTurn(ReaderTurnParams {
+                direction: if cmd == Cmd::Next {
+                    TurnDirection::Forward
+                } else {
+                    TurnDirection::Backward
+                },
+            })),
+            // Again on a bookmarked page takes the bookmark out.
+            Cmd::Mark => match self.bookmark_on(here) {
+                Some(index) => self.act(Call::BookmarkRemove(IndexParams { index })),
+                None => self.act(Call::BookmarkAdd(BookmarkAddParams {
+                    page: Some(here + 1),
+                    color: None,
+                })),
+            },
+            Cmd::Animate => self.act(set(ReaderSetParams {
+                animation: Some(!self.animate),
+                ..Default::default()
+            })),
+            Cmd::NoteDisplay => self.act(set(ReaderSetParams {
+                note_display: Some(self.note_display.next()),
+                ..Default::default()
+            })),
             Cmd::Help => self.mode = Mode::Help,
-            Cmd::Direction => {
-                self.rtl = !self.rtl;
-                self.entry.direction = Some(if self.rtl {
-                    Direction::RightToLeft
-                } else {
+            Cmd::Direction => self.act(set(ReaderSetParams {
+                direction: Some(if self.rtl {
                     Direction::LeftToRight
-                });
-                self.say(if self.rtl {
-                    "Pages run right to left".into()
                 } else {
-                    "Pages run left to right".into()
-                });
-                self.save();
-            }
-            Cmd::Vertical => {
-                self.vertical = !self.vertical;
-                self.entry.writing = Some(if self.vertical {
-                    Writing::Vertical
-                } else {
+                    Direction::RightToLeft
+                }),
+                ..Default::default()
+            })),
+            Cmd::Vertical => self.act(set(ReaderSetParams {
+                writing: Some(if self.vertical {
                     Writing::Horizontal
-                });
-                // Columns run right to left, and so do the pages.
-                if self.vertical && !self.rtl {
-                    self.rtl = true;
-                    self.entry.direction = Some(Direction::RightToLeft);
-                }
-                self.say(if self.vertical {
-                    "Set vertically".into()
                 } else {
-                    "Set across".into()
-                });
-                self.save();
-            }
+                    Writing::Vertical
+                }),
+                ..Default::default()
+            })),
             Cmd::Search => {
                 self.mode = Mode::Search {
                     query: String::new(),
@@ -1104,13 +1092,38 @@ impl Reader {
                 let hide = self.keep_settings && settings.tips == Some(false);
                 self.mode = Mode::Tip { index, hide };
             }
-            Cmd::Color => self.recolor_mark(here),
+            // The bookmark on this pane's page, else on the other open page.
+            Cmd::Color => {
+                let open = self.open_pages();
+                let index = self.bookmark_on(here).or_else(|| {
+                    let marks = &self.entry.marks;
+                    marks
+                        .iter()
+                        .position(|m| open.contains(&self.layout.page_of(m.at)))
+                });
+                match index {
+                    Some(index) => {
+                        let color = self.entry.marks[index].color.next();
+                        self.act(Call::BookmarkUpdate(BookmarkUpdateParams { index, color }));
+                    }
+                    None => self.say("No bookmark here (m to place one)".into()),
+                }
+            }
             // Step from the rows as set, which the pane may hold shorter than the measure.
             Cmd::Wider if self.layout.width < self.measure => {
                 self.say("Rows are already as long as the pane allows".into());
             }
-            Cmd::Wider => self.set_measure(self.layout.width + view::MEASURE_STEP),
-            Cmd::Narrower => self.set_measure(self.layout.width.saturating_sub(view::MEASURE_STEP)),
+            Cmd::Wider | Cmd::Narrower => {
+                let measure = if cmd == Cmd::Wider {
+                    self.layout.width + view::MEASURE_STEP
+                } else {
+                    self.layout.width.saturating_sub(view::MEASURE_STEP)
+                };
+                self.act(set(ReaderSetParams {
+                    measure: Some(measure.clamp(view::MEASURE_MIN, view::MEASURE_MAX)),
+                    ..Default::default()
+                }));
+            }
             Cmd::Contents => {
                 if self.doc.chapters.is_empty() {
                     self.say("No chapters in this input".into());
@@ -1151,15 +1164,7 @@ impl Reader {
                 Some(&i) => self.mode = Mode::Link(i),
                 None => self.say("No links on these pages".into()),
             },
-            Cmd::Return => match self.trail.pop() {
-                Some(at) => {
-                    self.entry.at = at;
-                    self.save();
-                    let page = self.layout.page_of(at);
-                    self.say(format!("Back to p.{}", page + 1));
-                }
-                None => self.say("Nowhere to go back to".into()),
-            },
+            Cmd::Return => self.act(Call::ReaderBack(EmptyParams {})),
             Cmd::Up | Cmd::Down | Cmd::Enter | Cmd::Delete => {}
         }
         false
@@ -1210,9 +1215,10 @@ impl Reader {
             Cmd::Down => self.mode = Mode::Contents(shown[(at + 1).min(shown.len() - 1)]),
             Cmd::Enter => {
                 self.mode = Mode::Reading;
-                if let Some(&p) = self.chapter_pages.get(sel) {
-                    self.jump(p);
-                }
+                self.act(Call::ReaderGoTo(ReaderGoToParams {
+                    chapter: Some(sel),
+                    ..Default::default()
+                }));
             }
             Cmd::Quit => return true,
             _ => self.mode = Mode::Reading,
@@ -1228,24 +1234,20 @@ impl Reader {
             Cmd::Enter => {
                 self.mode = Mode::Reading;
                 if let Some(s) = shelf.get(sel) {
-                    let p = self.layout.page_of(s.at);
-                    self.jump(p);
+                    self.act(Call::ReaderGoTo(ReaderGoToParams {
+                        at: Some(s.at),
+                        ..Default::default()
+                    }));
                 }
             }
             Cmd::Delete => {
                 match shelf.get(sel).map(|s| &s.item) {
-                    Some(&Item::Mark(i)) => {
-                        self.entry.marks.remove(i);
-                        self.say("Bookmark removed".into());
+                    Some(&Item::Mark(index)) => {
+                        self.act(Call::BookmarkRemove(IndexParams { index }));
                     }
-                    Some(&Item::Note(i)) => {
-                        self.entry.notes.remove(i);
-                        self.notes_rev += 1;
-                        self.say("Note removed".into());
-                    }
+                    Some(&Item::Note(index)) => self.act(Call::NoteRemove(IndexParams { index })),
                     None => {}
                 }
-                self.save();
                 let left = shelf.len().saturating_sub(1);
                 self.mode = if left == 0 {
                     Mode::Reading
@@ -1342,41 +1344,41 @@ impl Reader {
         };
         match key {
             "enter" if rewrite.is_some() => {
-                let (i, text) = (rewrite.unwrap_or(0), text.trim().to_string());
+                let (index, text) = (rewrite.unwrap_or(0), text.trim().to_string());
                 self.mode = Mode::Reading;
-                if let Some(note) = self.entry.notes.get_mut(i) {
-                    note.text = text;
-                    self.notes_rev += 1;
-                    self.say("Note kept".into());
-                    self.save();
-                }
+                self.act(Call::NoteUpdate(NoteUpdateParams {
+                    index,
+                    text: Some(text),
+                    color: None,
+                }));
             }
             "enter" if *ask => {
                 let question = text.trim().to_string();
-                let (anchor, at, end) = (*anchor, *at, *end);
+                let (anchor, at, end) = (*anchor, Some(*at), *end);
                 self.mode = Mode::Reading;
                 if !question.is_empty() {
-                    self.ask(&question, anchor, at, end);
+                    self.act(Call::QuestionAsk(QuestionAskParams {
+                        question,
+                        at,
+                        end,
+                        anchor,
+                    }));
                 }
             }
             "enter" => {
                 let text = text.trim().to_string();
-                let (anchor, at, end) = (*anchor, *at, *end);
+                let (anchor, at, end) = (*anchor, Some(*at), *end);
                 self.mode = Mode::Reading;
                 if !text.is_empty() {
-                    let color = end.map(|_| self.marker);
-                    self.add_note(Note {
-                        at,
-                        anchor,
+                    self.act(Call::NoteAdd(NoteAddParams {
                         text,
+                        at,
+                        end,
+                        anchor,
                         by: Author::Reader,
                         question: None,
-                        end,
-                        color,
-                    });
-                    self.notes_rev += 1;
-                    self.say("Note kept".into());
-                    self.save();
+                        color: None,
+                    }));
                 }
             }
             "esc" | "ctrl+c" => {
@@ -1583,19 +1585,15 @@ impl Reader {
         };
         match key {
             "c" => {
-                mark.color = mark.color.next();
-                let color = mark.color;
-                self.ribbon = color;
-                if let Err(e) = self.update_settings(|s| s.ribbon = Some(color)) {
-                    self.say(format!("Could not save the setting: {e}"));
-                }
-                self.save();
+                let color = mark.color.next();
+                self.act(Call::BookmarkUpdate(BookmarkUpdateParams {
+                    index: i,
+                    color,
+                }));
             }
             "d" | "m" | "delete" | "backspace" => {
-                self.entry.marks.remove(i);
                 self.mode = Mode::Reading;
-                self.say("Bookmark removed".into());
-                self.save();
+                self.act(Call::BookmarkRemove(IndexParams { index: i }));
             }
             "esc" | "q" | "enter" | "ctrl+c" => self.mode = Mode::Reading,
             _ => {}
@@ -1642,10 +1640,8 @@ impl Reader {
                     if self.layout.page_of(origin) != self.page() {
                         self.leave(origin);
                     }
-                    if let Some(log) = &mut self.log
-                        && !query.is_empty()
-                    {
-                        log.record(Logged::Searched { query, finds });
+                    if !query.is_empty() {
+                        self.emit(EventData::SearchDone { query, finds });
                     }
                 }
                 "esc" | "ctrl+c" => {
@@ -1749,12 +1745,11 @@ impl Reader {
         match key {
             "c" => {
                 let color = note.color.unwrap_or(Ribbon::Yellow).next();
-                note.color = Some(color);
-                self.marker = color;
-                if let Err(e) = self.update_settings(|s| s.marker = Some(color)) {
-                    self.say(format!("Could not save the setting: {e}"));
-                }
-                self.save();
+                self.act(Call::NoteUpdate(NoteUpdateParams {
+                    index: i,
+                    text: None,
+                    color: Some(color),
+                }));
             }
             "n" => {
                 self.mode = Mode::Writing {
@@ -1767,11 +1762,8 @@ impl Reader {
                 };
             }
             "d" | "delete" | "backspace" => {
-                self.entry.notes.remove(i);
-                self.notes_rev += 1;
                 self.mode = Mode::Reading;
-                self.say("Marker removed".into());
-                self.save();
+                self.act(Call::NoteRemove(IndexParams { index: i }));
             }
             "esc" | "q" | "enter" | "ctrl+c" => self.mode = Mode::Reading,
             _ => {}
@@ -1790,22 +1782,16 @@ impl Reader {
         };
         match key {
             "m" => {
-                self.add_note(Note {
-                    at: from,
-                    anchor: Anchor::Range,
+                self.mode = Mode::Reading;
+                self.act(Call::NoteAdd(NoteAddParams {
                     text: String::new(),
+                    at: Some(from),
+                    end: Some(to),
+                    anchor: Anchor::Range,
                     by: Author::Reader,
                     question: None,
-                    end: Some(to),
                     color: Some(self.marker),
-                });
-                self.notes_rev += 1;
-                self.mode = Mode::Reading;
-                self.say(format!(
-                    "Marked ({}); click it to change or remove",
-                    self.marker.name()
-                ));
-                self.save();
+                }));
             }
             "n" => self.mode = write(false),
             "?" => self.mode = write(true),
@@ -1848,13 +1834,14 @@ impl Reader {
             self.turning = Some(Turning::new(turn, Some(self.views().0), side));
             self.unsent_turn = Some(turn);
         }
+        self.moving = Some(crate::api::Move::Turn);
         self.go(page);
     }
 
     /// `at` as the reading log keeps it.
-    fn place(&self, at: Pos) -> crate::log::Place {
+    fn place(&self, at: Pos) -> crate::api::Place {
         let chapter = self.doc.chapter_of(at.line).map(|c| c.title.clone());
-        crate::log::Place {
+        crate::api::Place {
             line: at.line,
             offset: at.offset,
             page: self.layout.page_of(at) + 1,
@@ -1863,28 +1850,84 @@ impl Reader {
         }
     }
 
-    /// Writes what happened at `at` in the reading log.
-    fn record(&mut self, event: impl FnOnce(crate::log::Place) -> Logged, at: Pos) {
+    /// Keeps a note in the book, and says so.
+    fn add_note(&mut self, note: Note) {
+        let event = EventData::NoteAdded {
+            at: self.place(note.at),
+            anchor: note.anchor,
+            text: note.text.clone(),
+            quote: note.end.map(|end| self.text_between(note.at, end)),
+            by: note.by,
+            question: note.question.clone(),
+        };
+        self.entry.add_note(note);
+        self.emit(event);
+    }
+
+    /// Sends what the open pages are now: the session's start, the first
+    /// time; then each move, and reaching the last page. Pages passed
+    /// through while a search is typed are not read, so wait.
+    fn track(&mut self) {
+        if matches!(
+            self.mode,
+            Mode::Search {
+                typing: Some(_),
+                ..
+            }
+        ) {
+            return;
+        }
+        let at = self.entry.at;
+        if self.session.last == Some(at) {
+            return;
+        }
         let place = self.place(at);
-        if let Some(log) = &mut self.log {
-            log.record(event(place));
+        self.session.pages.insert(place.page);
+        if self.session.started.is_none() {
+            self.session.started = Some(Instant::now());
+            self.moving = None;
+            self.emit(EventData::SessionStarted {
+                book: self.book_info.clone(),
+                at: place.clone(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            });
+        } else {
+            let how = self.moving.take().unwrap_or(crate::api::Move::Jump);
+            self.emit(EventData::ReaderMoved {
+                at: place.clone(),
+                how,
+            });
+        }
+        self.session.last = Some(at);
+        let at_end = self.page() + self.step() >= self.layout.page_count();
+        if at_end && !self.session.finished {
+            self.session.finished = true;
+            self.emit(EventData::BookFinished { at: place });
         }
     }
 
-    /// Keeps a note in the book, and in the reading log.
-    fn add_note(&mut self, note: Note) {
-        let quote = note.end.map(|end| self.text_between(note.at, end));
-        let (anchor, text) = (note.anchor, note.text.clone());
-        self.record(
-            |at| Logged::NoteAdded {
-                at,
-                anchor,
-                text,
-                quote,
-            },
-            note.at,
-        );
-        self.entry.add_note(note);
+    /// Sends the session's end and the reader closing.
+    fn end_session(&mut self) {
+        let at = self.place(self.entry.at);
+        let seconds = self.session.started.map_or(0, |t| t.elapsed().as_secs());
+        self.emit(EventData::SessionEnded {
+            at,
+            pages_read: self.session.pages.len(),
+            seconds,
+        });
+        self.emit(EventData::ReaderClosed);
+    }
+
+    /// Sends the events waiting: to subscribers, and to the reading log.
+    fn flush(&mut self, server: Option<&Server>) {
+        for event in std::mem::take(&mut self.outbox) {
+            if let Some(log) = &mut self.log {
+                log.write(&event);
+            }
+            if let Some(s) = server {
+                s.hub.emit(event);
+            }
+        }
     }
 
     /// Goes to `page` as a jump, which `Return` can come back from.
@@ -1892,6 +1935,7 @@ impl Reader {
         if page != self.page() {
             self.leave(self.entry.at);
         }
+        self.moving = Some(crate::api::Move::Jump);
         self.go(page);
     }
 
@@ -1938,10 +1982,9 @@ impl Reader {
         });
     }
 
-    /// Footnotes, margin, marks only, and round again; kept for every book.
-    fn cycle_note_display(&mut self) {
-        self.note_display = self.note_display.next();
-        let display = self.note_display;
+    /// How notes are shown, kept for every book.
+    fn set_note_display(&mut self, display: NoteDisplay) {
+        self.note_display = display;
         let narrow = view::margin_room(self.pane_width, self.layout.width) < view::MARGIN_NOTE_MIN;
         self.say(match self.update_settings(|s| s.notes = Some(display)) {
             Ok(()) => match display {
@@ -1953,31 +1996,6 @@ impl Reader {
                 NoteDisplay::Marks => "Notes as marks only (l to read them)".into(),
             },
             Err(e) => format!("Could not save the setting: {e}"),
-        });
-    }
-
-    /// Sends the question, with the open pages, to an agent beside the
-    /// book. The agent answers in its own pane, and is asked to keep a short
-    /// answer in the book as a note where the question was asked.
-    fn ask(&mut self, question: &str, anchor: Anchor, at: Pos, end: Option<Pos>) {
-        let q = question.to_string();
-        self.record(|at| Logged::Asked { at, question: q }, at);
-        let agent = match herdr::find_agent(self.agent.as_deref()) {
-            Ok(a) => a,
-            Err(e) => {
-                self.say(e);
-                return;
-            }
-        };
-        let prompt = self.prompt(question, anchor, at, end);
-        self.say(format!("Asking {}…", agent.label));
-        let done = self.background.0.clone();
-        std::thread::spawn(move || {
-            let status = match herdr::prompt(&agent.target, &prompt) {
-                Ok(()) => format!("Asked {}: the answer comes back as a note", agent.label),
-                Err(e) => format!("Could not ask {}: {e}", agent.label),
-            };
-            let _ = done.send(status);
         });
     }
 
@@ -2039,57 +2057,6 @@ impl Reader {
             );
         }
         out
-    }
-
-    /// A bookmark marks one page: in a spread, the page of the pane `m` was
-    /// pressed in. A new one takes the colour last chosen.
-    fn toggle_mark(&mut self, page: usize) {
-        let open = page..page + 1;
-        let before = self.entry.marks.len();
-        let layout = &self.layout;
-        self.entry
-            .marks
-            .retain(|m| !open.contains(&layout.page_of(m.at)));
-        if self.entry.marks.len() == before {
-            let color = self.ribbon;
-            let at = self.layout.start_of(page);
-            let i = self.entry.marks.partition_point(|m| m.at <= at);
-            self.entry.marks.insert(i, Mark { at, color });
-            self.say(format!("Bookmarked p.{} ({})", page + 1, color.name()));
-            self.record(|at| Logged::BookmarkAdded { at, color }, at);
-        } else {
-            self.say("Bookmark removed".into());
-            let at = self.layout.start_of(page);
-            self.record(|at| Logged::BookmarkRemoved { at }, at);
-        }
-        self.save();
-    }
-
-    /// Gives the bookmark on `page` its next colour, which new bookmarks
-    /// then take too.
-    /// Failing one there, the bookmark on the other open page.
-    fn recolor_mark(&mut self, page: usize) {
-        let open = self.open_pages();
-        let page_of = |m: &Mark| self.layout.page_of(m.at);
-        let marks = &self.entry.marks;
-        let i = marks
-            .iter()
-            .position(|m| page_of(m) == page)
-            .or_else(|| marks.iter().position(|m| open.contains(&page_of(m))));
-        let Some(i) = i else {
-            self.say("No bookmark here (m to place one)".into());
-            return;
-        };
-        let mark = &mut self.entry.marks[i];
-        mark.color = mark.color.next();
-        let color = mark.color;
-        self.ribbon = color;
-        if let Err(e) = self.update_settings(|s| s.ribbon = Some(color)) {
-            self.say(format!("Could not save the setting: {e}"));
-        } else {
-            self.say(format!("Ribbon: {}", color.name()));
-        }
-        self.save();
     }
 
     fn update_settings(&self, change: impl FnOnce(&mut marks::Settings)) -> Result<()> {
@@ -3029,6 +2996,15 @@ mod tests {
             vertical: false,
             trail: Vec::new(),
             log: None,
+            outbox: Vec::new(),
+            book_info: crate::api::Book {
+                key: None,
+                title: String::new(),
+                format: crate::formats::Format::Text,
+            },
+            moving: None,
+            session: Session::default(),
+            closing: false,
             pace: None,
             socket: None,
             background: mpsc::channel(),
@@ -3544,6 +3520,175 @@ mod tests {
         let row = rows.iter().find(|row| row.pointer).unwrap();
         let text: String = row.spans.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(text.trim_end(), "   │ that will not");
+    }
+
+    /// The kinds of the events waiting to be sent, and clears them.
+    fn sent(r: &mut Reader) -> Vec<crate::api::EventKind> {
+        std::mem::take(&mut r.outbox)
+            .iter()
+            .map(|e| e.kind())
+            .collect()
+    }
+
+    #[test]
+    fn the_api_moves_the_book_and_says_so() {
+        use crate::api::{EventKind as K, Move};
+        let mut r = reader(&["one", "two", "three", "four"], 1);
+        r.track();
+        assert_eq!(sent(&mut r), [K::SessionStarted]);
+        let go = |page| {
+            Call::ReaderGoTo(ReaderGoToParams {
+                page: Some(page),
+                ..Default::default()
+            })
+        };
+        let Ok(ResponseResult::Moved { at }) = r.call(go(3)) else {
+            panic!("not moved");
+        };
+        assert_eq!((at.page, at.pages), (3, 4));
+        r.track();
+        let moved = std::mem::take(&mut r.outbox);
+        assert!(matches!(
+            moved[..],
+            [EventData::ReaderMoved {
+                how: Move::Jump,
+                ..
+            }]
+        ));
+        r.call(Call::ReaderTurn(ReaderTurnParams {
+            direction: TurnDirection::Forward,
+        }))
+        .unwrap();
+        r.track();
+        assert_eq!(sent(&mut r), [K::ReaderMoved, K::BookFinished]);
+        // Back along the trail: to before the jump.
+        r.call(Call::ReaderBack(EmptyParams {})).unwrap();
+        assert_eq!(r.page(), 0);
+        let refused = r.call(Call::ReaderBack(EmptyParams {})).unwrap_err();
+        assert_eq!(refused.code, "nowhere_to_go_back");
+        assert_eq!(r.call(go(9)).unwrap_err().code, "invalid_params");
+    }
+
+    #[test]
+    fn marks_and_notes_are_kept_through_the_api() {
+        use crate::api::EventKind as K;
+        let mut r = reader(&["one", "two", "three"], 1);
+        let added = r.call(Call::BookmarkAdd(BookmarkAddParams {
+            page: Some(2),
+            color: Some(Ribbon::Blue),
+        }));
+        assert!(matches!(added, Ok(ResponseResult::BookmarkAdded { .. })));
+        let again = r.call(Call::BookmarkAdd(BookmarkAddParams {
+            page: Some(2),
+            color: None,
+        }));
+        assert_eq!(again.unwrap_err().code, "bookmark_exists");
+        r.call(Call::BookmarkUpdate(BookmarkUpdateParams {
+            index: 0,
+            color: Ribbon::Green,
+        }))
+        .unwrap();
+        r.call(Call::NoteAdd(NoteAddParams {
+            text: "why".into(),
+            at: None,
+            end: None,
+            anchor: Anchor::Page,
+            by: Author::Agent,
+            question: Some("what?".into()),
+            color: None,
+        }))
+        .unwrap();
+        let Ok(ResponseResult::Notes { notes }) = r.call(Call::NoteList(EmptyParams {})) else {
+            panic!("no notes");
+        };
+        assert_eq!(
+            (notes[0].text.as_str(), notes[0].by),
+            ("why", Author::Agent)
+        );
+        r.call(Call::NoteRemove(IndexParams { index: 0 })).unwrap();
+        r.call(Call::BookmarkRemove(IndexParams { index: 0 }))
+            .unwrap();
+        assert_eq!(
+            sent(&mut r),
+            [
+                K::BookmarkAdded,
+                K::BookmarkChanged,
+                K::NoteAdded,
+                K::NoteRemoved,
+                K::BookmarkRemoved
+            ]
+        );
+        // A key does the same through the same call.
+        keys(&mut r, &["m"]);
+        assert_eq!(sent(&mut r), [K::BookmarkAdded]);
+    }
+
+    #[test]
+    fn settings_change_through_the_api() {
+        let mut r = reader(&["one"], 1);
+        let Ok(ResponseResult::Settings { settings }) = r.call(Call::ReaderSet(ReaderSetParams {
+            writing: Some(Writing::Vertical),
+            measure: Some(40),
+            ..Default::default()
+        })) else {
+            panic!("not set");
+        };
+        assert_eq!(settings.writing, Writing::Vertical);
+        assert_eq!(
+            settings.direction,
+            Direction::RightToLeft,
+            "columns run right to left"
+        );
+        assert_eq!(settings.measure, 40);
+        let wrong = r.call(Call::ReaderSet(ReaderSetParams {
+            measure: Some(5),
+            ..Default::default()
+        }));
+        assert_eq!(wrong.unwrap_err().code, "invalid_params");
+    }
+
+    #[test]
+    fn search_and_links_answer_without_moving() {
+        let mut r = reader(&["see 1", "two cat", "the note"], 1);
+        r.doc.links.push(crate::doc::Link {
+            line: 0,
+            start: 4,
+            end: 5,
+            target: 2,
+        });
+        let Ok(ResponseResult::SearchResults { finds, .. }) =
+            r.call(Call::SearchRun(crate::api::SearchRunParams {
+                query: "cat".into(),
+            }))
+        else {
+            panic!("no finds");
+        };
+        assert_eq!((finds.len(), finds[0].page), (1, 2));
+        assert_eq!(r.page(), 0);
+        let Ok(ResponseResult::Links { links }) =
+            r.call(Call::LinkList(crate::api::LinkListParams { open: true }))
+        else {
+            panic!("no links");
+        };
+        assert_eq!((links[0].text.as_str(), links[0].target.page), ("1", 3));
+        r.call(Call::LinkFollow(IndexParams { index: 0 })).unwrap();
+        assert_eq!(r.page(), 2);
+    }
+
+    #[test]
+    fn closing_through_the_api_ends_the_session() {
+        let mut r = reader(&["one"], 1);
+        r.call(Call::ReaderClose(EmptyParams {})).unwrap();
+        assert!(r.closing);
+        r.end_session();
+        let kinds = sent(&mut r);
+        assert_eq!(
+            kinds,
+            [
+                crate::api::EventKind::SessionEnded,
+                crate::api::EventKind::ReaderClosed
+            ]
+        );
     }
 
     #[test]
