@@ -339,6 +339,18 @@ const PARAGRAPH: &[&str] = &[
     "ul",
 ];
 
+/// The language a code element's class names, if it is one there is a
+/// grammar for.
+fn code_language(class: &str) -> Option<String> {
+    class.split_whitespace().find_map(|t| {
+        let lang = t
+            .strip_prefix("language-")
+            .or_else(|| t.strip_prefix("lang-"))
+            .unwrap_or(t);
+        (t != "sourceCode" && crate::highlight::knows(lang)).then(|| lang.to_string())
+    })
+}
+
 /// The style an inline element gives its text.
 fn inline_style(name: &str) -> Option<Style> {
     let mut s = Style::default();
@@ -375,6 +387,8 @@ struct Html<'a> {
     line_styles: Vec<Run>,
     /// The level of the heading being read, if one is.
     heading: Option<u8>,
+    /// Highlights the preformatted code being read, its language named.
+    code: Option<crate::highlight::Highlighter>,
     /// Links on lines set: line, start, end, where they lead.
     links: Vec<(usize, usize, usize, String)>,
 }
@@ -395,6 +409,7 @@ impl<'a> Html<'a> {
             open_styles: Vec::new(),
             line_styles: Vec::new(),
             heading: None,
+            code: None,
         }
     }
 
@@ -449,6 +464,17 @@ impl<'a> Html<'a> {
                 let line = self.lines.len();
                 self.headings.push(Chapter { title, level, line });
             }
+        }
+        // Code whose language is named: `language-rust`, or Pandoc's
+        // `sourceCode rust`.
+        if matches!(name, "pre" | "code")
+            && self.code.is_none()
+            && let Some(lang) = e.attr("class").and_then(code_language)
+        {
+            if name == "pre" {
+                self.flush(false);
+            }
+            self.code = crate::highlight::Highlighter::new(&lang);
         }
         match name {
             "pre" => self.pre += 1,
@@ -516,7 +542,13 @@ impl<'a> Html<'a> {
         }
 
         match name {
-            "pre" => self.pre -= 1,
+            "pre" => {
+                self.pre -= 1;
+                if self.pre == 0 {
+                    self.flush(false);
+                    self.code = None;
+                }
+            }
             "ul" | "ol" => {
                 self.lists.pop();
             }
@@ -566,6 +598,11 @@ impl<'a> Html<'a> {
                     accent: level <= 3,
                     ..Style::default()
                 };
+            }
+            if kind == Kind::Pre
+                && let Some(h) = &mut self.code
+            {
+                line.runs = h.line(&line.text);
             }
             let len = line.text.chars().count();
             // Styles still open run on to the end of this line, and on from
@@ -696,6 +733,35 @@ mod tests {
             zip.write_all(bytes).unwrap();
         }
         zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn code_is_highlighted_by_its_class() {
+        assert_eq!(code_language("sourceCode rust").as_deref(), Some("rust"));
+        assert_eq!(code_language("language-py").as_deref(), Some("py"));
+        assert_eq!(code_language("hljs"), None);
+        let book = epub(&[
+            (
+                "META-INF/container.xml",
+                br#"<container><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>"#,
+            ),
+            (
+                "book.opf",
+                br#"<package><manifest><item id="a" href="a.xhtml"/></manifest><spine><itemref idref="a"/></spine></package>"#,
+            ),
+            (
+                "a.xhtml",
+                br#"<html><body><pre><code class="language-rust">fn main() {
+    let s = "hi";
+}</code></pre><p>after</p></body></html>"#,
+            ),
+        ]);
+        let d = load(book).unwrap();
+        assert_eq!(d.lines[0].kind, Kind::Pre);
+        assert!(d.lines[0].style_at(0).color.is_some());
+        assert!(d.lines[1].style_at(12).color.is_some(), "the string");
+        let after = d.lines.iter().find(|l| l.text == "after").unwrap();
+        assert!(after.runs.is_empty());
     }
 
     #[test]

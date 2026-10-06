@@ -41,6 +41,9 @@ pub struct Style {
     /// Inline code.
     #[serde(default, skip_serializing_if = "is_false")]
     pub code: bool,
+    /// A colour for the text, as code is highlighted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<Ink>,
     /// Under a highlighter marker, of this colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marker: Option<crate::marks::Ribbon>,
@@ -63,11 +66,21 @@ impl Style {
             dim: self.dim || o.dim,
             accent: self.accent || o.accent,
             code: self.code || o.code,
+            color: o.color.or(self.color),
             marker: o.marker.or(self.marker),
             selected: self.selected || o.selected,
             found: self.found || o.found,
         }
     }
+}
+
+/// A colour for text: one of the terminal's palette (so it follows the
+/// terminal's theme), or an exact one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Ink {
+    Palette(u8),
+    Rgb([u8; 3]),
 }
 
 /// Text in one style, as drawn.

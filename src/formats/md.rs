@@ -50,6 +50,8 @@ struct Renderer {
     items: Vec<usize>,
     /// Text of the code block being read.
     code: Option<String>,
+    /// The language the code block being read is in, as its fence names it.
+    code_lang: String,
     /// Where pictures are looked for.
     dir: Option<std::path::PathBuf>,
     /// The picture being read, if it can be shown.
@@ -153,9 +155,13 @@ impl Renderer {
                 self.flush();
                 self.quotes += 1;
             }
-            Tag::CodeBlock(_) => {
+            Tag::CodeBlock(kind) => {
                 self.flush();
                 self.code = Some(String::new());
+                self.code_lang = match kind {
+                    pulldown_cmark::CodeBlockKind::Fenced(lang) => lang.to_string(),
+                    pulldown_cmark::CodeBlockKind::Indented => String::new(),
+                };
             }
             Tag::List(start) => {
                 self.flush();
@@ -254,9 +260,13 @@ impl Renderer {
                 let code = self.code.take().unwrap_or_default();
                 let indent = " ".repeat(self.items.last().copied().unwrap_or(0));
                 let gutter = format!("{indent}{}▏ ", self.quote_bar());
+                let mut highlight = crate::highlight::Highlighter::new(&self.code_lang);
                 for l in code.lines() {
                     let mut line = Line::new(l, Kind::Pre);
                     line.gutter = gutter.clone();
+                    if let Some(h) = &mut highlight {
+                        line.runs = h.line(&line.text);
+                    }
                     self.doc.lines.push(line);
                 }
                 if self.lists.is_empty() {
@@ -504,6 +514,14 @@ mod tests {
 
     fn texts(src: &str) -> Vec<String> {
         load(src).lines.into_iter().map(|l| l.text).collect()
+    }
+
+    #[test]
+    fn fenced_code_is_highlighted_by_its_language() {
+        let d = load("```rust\nfn main() {}\n```\n\n```\nfn main() {}\n```\n");
+        let code: Vec<_> = d.lines.iter().filter(|l| l.kind == Kind::Pre).collect();
+        assert!(code[0].style_at(0).color.is_some());
+        assert!(code[1].runs.is_empty(), "no language, no colour");
     }
 
     #[test]

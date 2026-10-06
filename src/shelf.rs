@@ -37,6 +37,8 @@ pub struct Shelved {
     pub bookmarks: usize,
     /// When the last page was first reached.
     pub finished: Option<String>,
+    /// The folder it is in, shown when another book has the same title.
+    pub folder: Option<String>,
 }
 
 /// Every book read, from the reading log and the bookmarks file, the one
@@ -57,6 +59,7 @@ pub fn books() -> Vec<Shelved> {
                 notes: e.notes.len(),
                 bookmarks: e.marks.len(),
                 finished: None,
+                folder: None,
             },
         );
     }
@@ -74,6 +77,7 @@ pub fn books() -> Vec<Shelved> {
             notes: 0,
             bookmarks: 0,
             finished: None,
+            folder: None,
         });
         if s.finished && b.finished.as_ref().is_none_or(|t| *t > s.ended) {
             b.finished = Some(s.ended.clone());
@@ -86,8 +90,32 @@ pub fn books() -> Vec<Shelved> {
         }
     }
     let mut all: Vec<Shelved> = by_key.into_values().collect();
+    // Books of the same title are told apart by their folders.
+    let mut titles: BTreeMap<String, usize> = BTreeMap::new();
+    for b in &all {
+        *titles.entry(b.title.clone()).or_default() += 1;
+    }
+    for b in &mut all {
+        if titles[&b.title] > 1 {
+            b.folder = Some(folder_of(&b.key));
+        }
+    }
     all.sort_by(|a, b| b.last_read.cmp(&a.last_read).then(a.title.cmp(&b.title)));
     all
+}
+
+/// The folder `key` is in, home written as `~`.
+fn folder_of(key: &str) -> String {
+    let dir = std::path::Path::new(key)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && dir.starts_with(&home) => {
+            format!("~{}", &dir[home.len()..])
+        }
+        _ => dir,
+    }
 }
 
 fn file_name(key: &str) -> String {
@@ -168,10 +196,17 @@ fn draw(f: &mut ratatui::Frame, books: &[Shelved], sel: usize, message: Option<&
                 .as_deref()
                 .and_then(|t| t.get(..10))
                 .unwrap_or("");
-            let title = view::fit(&b.title, w.saturating_sub(date.width() + 2));
-            let gap = " ".repeat(w.saturating_sub(title.width() + date.width()));
+            let room = w.saturating_sub(date.width() + 2);
+            let title = view::fit(&b.title, room);
+            let folder = b
+                .folder
+                .as_deref()
+                .map(|f| view::fit(&format!("  {f}"), room.saturating_sub(title.width())))
+                .unwrap_or_default();
+            let gap = " ".repeat(w.saturating_sub(title.width() + folder.width() + date.width()));
             let first = Line::from(vec![
                 Span::styled(title, Style::new().add_modifier(Modifier::BOLD)),
+                Span::styled(folder, dim),
                 Span::raw(gap),
                 Span::styled(date.to_string(), dim),
             ]);
@@ -216,7 +251,12 @@ fn detail(b: &Shelved, width: usize) -> Vec<Span<'static>> {
     }
     let (bar, percent) = match &b.at {
         Some(at) => {
-            let p = (at.page * 100 / at.pages.max(1)).min(100);
+            // A book read to the end is full, wherever it was left.
+            let p = if b.finished.is_some() {
+                100
+            } else {
+                (at.page * 100 / at.pages.max(1)).min(100)
+            };
             let filled = p / 10;
             (
                 vec![
@@ -260,11 +300,24 @@ mod tests {
             notes: 2,
             bookmarks: 0,
             finished: None,
+            folder: None,
         };
         let text: String = detail(&b, 80).iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(
             text,
             "━━━───────  30%  p.30 / 100 · in “Two” · 1 h · 2 notes"
+        );
+        let finished = Shelved {
+            finished: Some("2026-10-05T12:00:00Z".into()),
+            ..b
+        };
+        let text: String = detail(&finished, 80)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            text.starts_with("━━━━━━━━━━ 100%  ✓ finished 2026-10-05 · p.30 / 100"),
+            "{text}"
         );
     }
 }
