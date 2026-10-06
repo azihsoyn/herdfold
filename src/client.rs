@@ -18,9 +18,7 @@ pub fn readers() -> Vec<std::path::PathBuf> {
     let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(crate::server::socket_dir())
         .map(|d| d.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
-    found.retain(|p| {
-        p.extension().is_some_and(|e| e == "sock") && UnixStream::connect(p).is_ok()
-    });
+    found.retain(|p| p.extension().is_some_and(|e| e == "sock") && UnixStream::connect(p).is_ok());
     found.sort();
     found
 }

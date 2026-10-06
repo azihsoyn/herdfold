@@ -178,6 +178,9 @@ struct Reader {
     session: Session,
     /// Closing, as `reader.close` asked.
     closing: bool,
+    /// What checking the places kept against the text found, to send once
+    /// the session has started.
+    checked: Option<crate::anchor::Checked>,
     /// Seconds a page usually takes, from the reading log.
     pace: Option<f64>,
     /// Where this reader's socket is, for an agent to write notes back.
@@ -231,6 +234,8 @@ pub struct Opening {
     pub format: crate::formats::Format,
     /// Where to open it, rather than where it was left.
     pub start: Option<Pos>,
+    /// A digest of the book's bytes, to know it again if it was moved.
+    pub digest: Option<String>,
 }
 
 /// Opens the book.
@@ -242,8 +247,18 @@ pub fn run(doc: Document, book: Option<String>, opening: Opening) -> Result<()> 
         agent,
         format,
         start,
+        digest,
     } = opening;
-    let mut entry: Entry = book.as_deref().and_then(marks::load).unwrap_or_default();
+    // A book not known by its file may be one moved: known by its bytes.
+    let mut entry: Entry = book
+        .as_deref()
+        .and_then(|key| marks::load(key).or_else(|| marks::adopt(key, digest.as_deref()?)))
+        .unwrap_or_default();
+    if digest.is_some() {
+        entry.digest = digest;
+    }
+    // The places kept were for the text as it was: find them in it as it is.
+    let checked = crate::anchor::check(&crate::anchor::Text::new(&doc), &mut entry);
     if let Some(at) = start {
         entry.at = at;
     }
@@ -281,6 +296,7 @@ pub fn run(doc: Document, book: Option<String>, opening: Opening) -> Result<()> 
         moving: None,
         session: Session::default(),
         closing: false,
+        checked: Some(checked),
         chapter_pages: Vec::new(),
         spread: false,
         mode: Mode::Reading,
@@ -1850,8 +1866,13 @@ impl Reader {
         }
     }
 
-    /// Keeps a note in the book, and says so.
-    fn add_note(&mut self, note: Note) {
+    /// Keeps a note in the book, with the words it is on, and says so.
+    fn add_note(&mut self, mut note: Note) {
+        let text = crate::anchor::Text::new(&self.doc);
+        note.quote = match note.end {
+            Some(end) => text.quote_range(note.at, end),
+            None => text.quote_point(note.at),
+        };
         let event = EventData::NoteAdded {
             at: self.place(note.at),
             anchor: note.anchor,
@@ -1891,6 +1912,19 @@ impl Reader {
                 at: place.clone(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             });
+            if let Some(c) = self.checked.take()
+                && (c.moved > 0 || c.lost > 0)
+            {
+                self.emit(EventData::AnchorsChecked {
+                    moved: c.moved,
+                    lost: c.lost,
+                });
+                self.say(match (c.moved, c.lost) {
+                    (m, 0) => format!("The text has changed: {m} mark(s) found again"),
+                    (_, l) => format!("The text has changed: {l} mark(s) lost (l shows them)"),
+                });
+                self.save();
+            }
         } else {
             let how = self.moving.take().unwrap_or(crate::api::Move::Jump);
             self.emit(EventData::ReaderMoved {
@@ -2068,6 +2102,9 @@ impl Reader {
     }
 
     fn save(&mut self) {
+        if self.book.is_some() {
+            self.entry.place = crate::anchor::Text::new(&self.doc).quote_point(self.entry.at);
+        }
         if let Some(book) = &self.book
             && let Err(e) = marks::save(book, &self.entry)
         {
@@ -2087,8 +2124,9 @@ impl Reader {
 
     /// Bookmarks and notes, in reading order.
     fn shelf(&self) -> Vec<Shelved> {
+        let lost = |lost: bool| if lost { "? " } else { "" };
         let marks = self.entry.marks.iter().enumerate().map(|(i, m)| Shelved {
-            label: format!("▍ {}", self.row_text(m.at)),
+            label: format!("▍ {}{}", lost(m.lost), self.row_text(m.at)),
             at: m.at,
             item: Item::Mark(i),
             color: Some(m.color),
@@ -2108,7 +2146,7 @@ impl Reader {
                 _ => format!("{sign} {}  — {}", n.text, self.row_text(n.at)),
             };
             Shelved {
-                label,
+                label: format!("{}{label}", lost(n.lost)),
                 at: n.at,
                 item: Item::Note(i),
                 color: None,
@@ -3005,6 +3043,7 @@ mod tests {
             moving: None,
             session: Session::default(),
             closing: false,
+            checked: None,
             pace: None,
             socket: None,
             background: mpsc::channel(),

@@ -377,12 +377,13 @@ impl Reader {
     }
 
     fn bookmark_info(&self, i: usize) -> BookmarkInfo {
-        let m = self.entry.marks[i];
+        let m = &self.entry.marks[i];
         BookmarkInfo {
             index: i,
             at: self.place(m.at),
             color: m.color,
             text: self.row_text(m.at),
+            lost: m.lost,
         }
     }
 
@@ -398,6 +399,7 @@ impl Reader {
             question: n.question.clone(),
             quote: n.end.map(|end| self.text_between(n.at, end)),
             color: n.color,
+            lost: n.lost,
         }
     }
 
@@ -430,7 +432,16 @@ impl Reader {
         let color = p.color.unwrap_or(self.ribbon);
         let at = self.layout.start_of(page);
         let i = self.entry.marks.partition_point(|m| m.at <= at);
-        self.entry.marks.insert(i, Mark { at, color });
+        let quote = crate::anchor::Text::new(&self.doc).quote_point(at);
+        self.entry.marks.insert(
+            i,
+            Mark {
+                at,
+                color,
+                quote,
+                lost: false,
+            },
+        );
         self.say(format!("Bookmarked p.{} ({})", page + 1, color.name()));
         self.save();
         let place = self.place(at);
@@ -462,6 +473,8 @@ impl Reader {
             question: p.question,
             end: p.end,
             color,
+            quote: None,
+            lost: false,
         });
         self.notes_rev += 1;
         self.say(match (p.by, marker && p.text.trim().is_empty()) {

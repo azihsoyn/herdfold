@@ -207,6 +207,8 @@ mod tests {
             question: None,
             end: None,
             color: None,
+            quote: None,
+            lost: false,
         };
         let entry = Entry {
             notes: vec![
@@ -223,6 +225,8 @@ mod tests {
             marks: vec![Mark {
                 at: at(8, 0),
                 color: Ribbon::Blue,
+                quote: None,
+                lost: false,
             }],
             ..Entry::default()
         };
