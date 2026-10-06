@@ -339,6 +339,21 @@ const PARAGRAPH: &[&str] = &[
     "ul",
 ];
 
+/// The style an inline element gives its text.
+fn inline_style(name: &str) -> Option<Style> {
+    let mut s = Style::default();
+    match name {
+        "em" | "i" | "cite" | "dfn" | "var" => s.italic = true,
+        "strong" | "b" => s.bold = true,
+        "code" | "kbd" | "samp" | "tt" => s.code = true,
+        "s" | "strike" | "del" => s.strike = true,
+        "u" | "ins" => s.underline = true,
+        "rt" => s.dim = true,
+        _ => return None,
+    }
+    Some(s)
+}
+
 /// Flattens XHTML into lines.
 struct Html<'a> {
     lines: &'a mut Vec<Line>,
@@ -353,6 +368,13 @@ struct Html<'a> {
     pictures: Vec<(usize, String)>,
     /// Links in the line being built: start, end, where they lead.
     line_links: Vec<(usize, usize, String)>,
+    /// Inline styles open (emphasis, code, a ruby's reading...), each
+    /// from where it starts in the line being built.
+    open_styles: Vec<(usize, Style)>,
+    /// Styled stretches of the line being built.
+    line_styles: Vec<Run>,
+    /// The level of the heading being read, if one is.
+    heading: Option<u8>,
     /// Links on lines set: line, start, end, where they lead.
     links: Vec<(usize, usize, usize, String)>,
 }
@@ -370,6 +392,9 @@ impl<'a> Html<'a> {
             pictures: Vec::new(),
             line_links: Vec::new(),
             links: Vec::new(),
+            open_styles: Vec::new(),
+            line_styles: Vec::new(),
+            heading: None,
         }
     }
 
@@ -379,7 +404,7 @@ impl<'a> Html<'a> {
         }
         let name = e.name.as_str();
         match name {
-            "head" | "script" | "style" | "title" => return,
+            "head" | "script" | "style" | "title" | "rp" => return,
             "br" => return self.flush(true),
             "hr" => {
                 self.flush(false);
@@ -418,6 +443,7 @@ impl<'a> Html<'a> {
         };
         if let Some(level) = level {
             self.kind = Kind::Heading;
+            self.heading = Some(level);
             let title = e.text();
             if !title.is_empty() {
                 let line = self.lines.len();
@@ -442,6 +468,14 @@ impl<'a> Html<'a> {
             _ => {}
         }
 
+        let inline = inline_style(name);
+        if let Some(style) = inline {
+            self.open_styles.push((self.cur.chars().count(), style));
+        }
+        // A ruby's reading follows what it reads, in brackets, dimmed.
+        if name == "rt" {
+            self.cur.push('（');
+        }
         // A link within the book; one to the web is only text.
         let link = (name == "a")
             .then(|| e.attr("href"))
@@ -456,6 +490,18 @@ impl<'a> Html<'a> {
             }
         }
 
+        if name == "rt" {
+            self.cur.push('）');
+        }
+        // Closed after the bracket, so the bracket is dimmed too.
+        if inline.is_some()
+            && let Some((start, style)) = self.open_styles.pop()
+        {
+            let end = self.cur.chars().count();
+            if start < end {
+                self.line_styles.push(Run { start, end, style });
+            }
+        }
         if let Some((line, start, href)) = link
             && line == self.lines.len()
         {
@@ -514,6 +560,27 @@ impl<'a> Html<'a> {
             let kind = if self.pre > 0 { Kind::Pre } else { self.kind };
             let mut line = Line::new(s, kind);
             let at = self.lines.len();
+            if let Some(level) = self.heading.filter(|_| kind == Kind::Heading) {
+                line.style = Style {
+                    bold: true,
+                    accent: level <= 3,
+                    ..Style::default()
+                };
+            }
+            let len = line.text.chars().count();
+            // Styles still open run on to the end of this line, and on from
+            // the start of the next.
+            let open = self.open_styles.iter().map(|&(start, style)| Run {
+                start,
+                end: len,
+                style,
+            });
+            for run in self.line_styles.drain(..).chain(open) {
+                let end = run.end.min(len);
+                if run.start < end {
+                    line.runs.push(Run { end, ..run });
+                }
+            }
             for (start, end, href) in self.line_links.drain(..) {
                 let end = end.min(line.text.chars().count());
                 line.runs.push(Run {
@@ -529,6 +596,11 @@ impl<'a> Html<'a> {
             self.lines.push(line);
         }
         self.line_links.clear();
+        self.line_styles.clear();
+        for (start, _) in &mut self.open_styles {
+            *start = 0;
+        }
+        self.heading = None;
         self.cur.clear();
         self.kind = Kind::Body;
     }
@@ -624,6 +696,34 @@ mod tests {
             zip.write_all(bytes).unwrap();
         }
         zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn ruby_and_emphasis_are_set_inline() {
+        let book = epub(&[
+            (
+                "META-INF/container.xml",
+                br#"<container><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>"#,
+            ),
+            (
+                "book.opf",
+                br#"<package><manifest><item id="a" href="a.xhtml"/></manifest><spine><itemref idref="a"/></spine></package>"#,
+            ),
+            (
+                "a.xhtml",
+                r#"<html><body><h2>Title</h2><p><ruby>漢字<rp>(</rp><rt>かんじ</rt><rp>)</rp></ruby>を<em>読む
+                and <b>more</b></em></p></body></html>"#
+                    .as_bytes(),
+            ),
+        ]);
+        let d = load(book).unwrap();
+        assert!(d.lines[0].style.bold && d.lines[0].style.accent);
+        let p = &d.lines[2];
+        assert_eq!(p.text, "漢字（かんじ）を読む and more");
+        let styled = |i: usize| p.style_at(i);
+        assert!(!styled(1).dim && styled(2).dim && styled(6).dim && !styled(7).dim);
+        assert!(styled(8).italic && !styled(8).bold);
+        assert!(styled(16).italic && styled(16).bold);
     }
 
     #[test]

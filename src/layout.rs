@@ -243,10 +243,16 @@ fn width_of(c: char) -> usize {
 }
 
 /// Characters that may not open a row (kinsoku).
-const NO_START: &str =
-    "、。，．・：；？！ー）」』】〕〉》’”…ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮ";
+const NO_START: &str = concat!(
+    "、。，．・：；？！‼⁇⁈⁉ー〜～）」』】〕〉》〙〗〟’”｝］",
+    "ゝゞヽヾ々〻",
+    "ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ",
+    ")]},.!?:;",
+);
 /// Characters that may not close a row.
-const NO_END: &str = "（「『【〔〈《‘“";
+const NO_END: &str = "（「『【〔〈《〘〖〝‘“｛［([{";
+/// Characters kept together when doubled, as ……, ‥‥ and ——.
+const NO_SPLIT: &str = "…‥—―";
 
 fn can_break(before: char, after: char) -> bool {
     if before == ' ' {
@@ -256,6 +262,7 @@ fn can_break(before: char, after: char) -> bool {
         && (width_of(before) == 2 || width_of(after) == 2)
         && !NO_START.contains(after)
         && !NO_END.contains(before)
+        && !(before == after && NO_SPLIT.contains(before))
 }
 
 /// A picture's rows: as wide as it is in cells, at most the column, and
@@ -579,6 +586,11 @@ mod tests {
     #[test]
     fn kinsoku_keeps_punctuation_off_the_row_start() {
         assert_eq!(rows("あい。うえ", 4), ["あ", "い。", "うえ"]);
+        assert_eq!(rows("あい)うえ", 4), ["あ", "い)", "うえ"]);
+        assert_eq!(rows("あ人々うえ", 4), ["あ", "人々", "うえ"]);
+        assert_eq!(rows("あい「うえ", 6), ["あい", "「うえ"]);
+        // "…" is one column wide.
+        assert_eq!(rows("あ……う", 3), ["あ", "……", "う"]);
     }
 
     #[test]

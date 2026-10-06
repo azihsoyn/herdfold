@@ -1,6 +1,7 @@
 //! Turning an input into a `Document`. The format is always named by the
 //! caller; nothing here guesses it from the bytes or the file name.
 
+mod aozora;
 mod diff;
 mod epub;
 mod md;
@@ -32,6 +33,9 @@ pub enum Format {
     Diff,
     /// EPUB. The book's own table of contents gives the chapters.
     Epub,
+    /// Aozora Bunko text (青空文庫), Shift_JIS or UTF-8: ruby set after its
+    /// text, notes dropped. Headings its notes name are chapters.
+    Aozora,
 }
 
 /// Reads `bytes` as `format`. Pictures a Markdown file points at are looked
@@ -47,6 +51,7 @@ pub fn load(
         Format::Md => md::load_in(&String::from_utf8_lossy(&bytes), dir),
         Format::Diff => diff::load(&String::from_utf8_lossy(&bytes)),
         Format::Epub => epub::load(bytes)?,
+        Format::Aozora => aozora::load(&bytes),
     };
     if doc.title.is_empty() {
         doc.title = name.to_string();
