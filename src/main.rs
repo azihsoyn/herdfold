@@ -4,14 +4,17 @@ mod attach;
 mod cli;
 mod client;
 mod doc;
+mod export;
 mod formats;
 mod herdr;
 mod keys;
 mod layout;
+mod log;
 mod marks;
 mod note;
 mod pictures;
 mod server;
+mod shelf;
 mod turn;
 mod view;
 
@@ -37,11 +40,12 @@ pub const NAME: &str = env!("CARGO_PKG_NAME");
 #[command(name = NAME, version, subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
 struct Cli {
     /// How to read the input. Never guessed.
-    #[arg(long, value_enum, required = true)]
+    #[arg(long, value_enum, requires = "file")]
     format: Option<Format>,
 
-    /// The file to read, or `-` for stdin.
-    #[arg(required = true)]
+    /// The file to read, or `-` for stdin. With neither, the shelf of books
+    /// read before.
+    #[arg(requires = "format")]
     file: Option<PathBuf>,
 
     /// Show one page at a time, even inside herdr.
@@ -73,9 +77,12 @@ enum Command {
     /// Reader helpers over the socket API
     #[command(subcommand)]
     Reader(ReaderCommand),
-    /// Notes in the book open in the reader at $HERDFOLD_SOCKET_PATH
+    /// Notes: written into the open reader, or exported from a book
     #[command(subcommand)]
     Note(NoteCommand),
+    /// The reading log: one JSON Lines file a session
+    #[command(subcommand)]
+    Log(LogCommand),
     /// Inspect the socket API
     #[command(subcommand)]
     Api(ApiCommand),
@@ -114,6 +121,39 @@ enum NoteCommand {
         #[arg(long)]
         question: Option<String>,
     },
+    /// Print the notes, markers and bookmarks written in a book, as Markdown
+    Export {
+        /// How to read the book. Never guessed.
+        #[arg(long, value_enum)]
+        format: Format,
+        /// The book.
+        file: PathBuf,
+        /// JSON instead, in herdr's reply envelope.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum LogCommand {
+    /// List sessions, newest first
+    List {
+        /// Only sessions with this book.
+        #[arg(long, value_name = "FILE")]
+        book: Option<PathBuf>,
+    },
+    /// Show a session: its summary and every record
+    Show { session: String },
+    /// Write every record as JSON Lines to stdout, oldest first
+    Export {
+        /// Only sessions with this book.
+        #[arg(long, value_name = "FILE")]
+        book: Option<PathBuf>,
+    },
+    /// Read records written by `export` (a file, or `-` for stdin)
+    Import { file: PathBuf },
+    /// Open the book a session read, where it left off
+    Resume { session: String },
 }
 
 #[derive(Subcommand)]
@@ -150,18 +190,66 @@ fn main() -> Result<ExitCode> {
             let params = note::params(text, note::place(line, offset), anchor, by, question);
             Ok(cli::finish("note:add", note::add(params)))
         }
+        Some(Command::Note(NoteCommand::Export { format, file, json })) => {
+            Ok(cli::finish("note:export", export::run(format, file, json)))
+        }
         Some(Command::Config(ConfigCommand::Check)) => {
             Ok(cli::finish("config:check", keys::check()))
         }
         Some(Command::Config(ConfigCommand::ResetKeys)) => {
             Ok(cli::finish("config:reset-keys", keys::reset()))
         }
+        Some(Command::Log(LogCommand::List { book })) => {
+            Ok(cli::finish("log:list", log::list(book)))
+        }
+        Some(Command::Log(LogCommand::Show { session })) => {
+            Ok(cli::finish("log:show", log::show(&session)))
+        }
+        Some(Command::Log(LogCommand::Export { book })) => {
+            Ok(cli::finish("log:export", log::export(book)))
+        }
+        Some(Command::Log(LogCommand::Import { file })) => {
+            Ok(cli::finish("log:import", log::import(file)))
+        }
+        Some(Command::Log(LogCommand::Resume { session })) => {
+            let (book, at) = match log::resume_point(&session) {
+                Ok(found) => found,
+                Err(e) => return Ok(cli::finish("log:resume", Err(e))),
+            };
+            let file = PathBuf::from(book.key.unwrap_or_default());
+            open(
+                book.format,
+                file,
+                cli.no_spread,
+                None,
+                None,
+                cli.agent,
+                Some(at),
+            )?;
+            Ok(ExitCode::SUCCESS)
+        }
         Some(Command::Api(ApiCommand::Schema { json, output })) => {
             Ok(cli::finish("api:schema", cli::api_schema(json, output)))
         }
         None => {
             let (Some(format), Some(file)) = (cli.format, cli.file) else {
-                unreachable!("clap requires both without a subcommand");
+                // No book named: the shelf, until it is closed; a book
+                // closed comes back to it.
+                let mut say = None;
+                while let Some((format, file)) = shelf::pick(say.take())? {
+                    if let Err(e) = open(
+                        format,
+                        file,
+                        cli.no_spread,
+                        None,
+                        None,
+                        cli.agent.clone(),
+                        None,
+                    ) {
+                        say = Some(format!("{e:#}"));
+                    }
+                }
+                return Ok(ExitCode::SUCCESS);
             };
             open(
                 format,
@@ -174,6 +262,7 @@ fn main() -> Result<ExitCode> {
                     _ => None,
                 },
                 cli.agent,
+                None,
             )?;
             Ok(ExitCode::SUCCESS)
         }
@@ -187,6 +276,7 @@ fn open(
     measure: Option<usize>,
     animate: Option<bool>,
     agent: Option<String>,
+    start: Option<layout::Pos>,
 ) -> Result<()> {
     let (bytes, name, book) = if file.as_os_str() == "-" {
         let mut buf = Vec::new();
@@ -207,5 +297,16 @@ fn open(
         .then(|| file.parent().map(|p| p.to_path_buf()))
         .flatten();
     let doc = formats::load(format, bytes, &name, dir.as_deref())?;
-    app::run(doc, book, !no_spread, measure, animate, agent)
+    app::run(
+        doc,
+        book,
+        app::Opening {
+            spread: !no_spread,
+            measure,
+            animate,
+            agent,
+            format,
+            start,
+        },
+    )
 }

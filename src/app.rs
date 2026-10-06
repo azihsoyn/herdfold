@@ -22,6 +22,7 @@ use crate::doc::{Kind, Line as DocLine, Style as TextStyle};
 use crate::herdr::{self, RightPane};
 use crate::keys::{self, Keymap};
 use crate::layout::{Layout, Pos};
+use crate::log::Event as Logged;
 use crate::marks::{self, Anchor, Author, Direction, Entry, Mark, Note, NoteDisplay, Ribbon};
 use crate::pictures::Pictures;
 use crate::server::{ConnId, Hub, Inbound, Server};
@@ -155,6 +156,10 @@ struct Reader {
     folded: std::collections::BTreeSet<usize>,
     /// Places left by jumps (contents, list, search), the latest last.
     trail: Vec<Pos>,
+    /// The reading log of this session; none under test.
+    log: Option<crate::log::Log>,
+    /// Seconds a page usually takes, from the reading log.
+    pace: Option<f64>,
     /// Where this reader's socket is, for an agent to write notes back.
     socket: Option<PathBuf>,
     /// Outcomes of work done off the main loop (asking the agent).
@@ -183,19 +188,41 @@ struct LaidFor {
     cell: Option<(u32, u32)>,
 }
 
-/// Opens the book. With `spread`, and inside herdr, the right-hand page goes
-/// to a pane split off for it.
-/// `measure` (longest row) defaults to the one last set for this book, then
-/// to the one last set for any book, then to 72.
-pub fn run(
-    doc: Document,
-    book: Option<String>,
-    spread: bool,
-    measure: Option<usize>,
-    animate: Option<bool>,
-    agent: Option<String>,
-) -> Result<()> {
-    let entry = book.as_deref().and_then(marks::load).unwrap_or_default();
+/// How a book is opened, as asked on the command line.
+pub struct Opening {
+    /// Inside herdr, the right-hand page goes to a pane split off for it.
+    pub spread: bool,
+    /// Longest row; defaults to the one last set for this book, then to
+    /// the one last set for any book, then to 72.
+    pub measure: Option<usize>,
+    pub animate: Option<bool>,
+    pub agent: Option<String>,
+    pub format: crate::formats::Format,
+    /// Where to open it, rather than where it was left.
+    pub start: Option<Pos>,
+}
+
+/// Opens the book.
+pub fn run(doc: Document, book: Option<String>, opening: Opening) -> Result<()> {
+    let Opening {
+        spread,
+        measure,
+        animate,
+        agent,
+        format,
+        start,
+    } = opening;
+    let mut entry: Entry = book.as_deref().and_then(marks::load).unwrap_or_default();
+    if let Some(at) = start {
+        entry.at = at;
+    }
+    entry.format = Some(format);
+    entry.title = Some(doc.title.clone());
+    let log_book = crate::log::Book {
+        key: book.clone(),
+        title: doc.title.clone(),
+        format,
+    };
     let settings = marks::settings();
     let measure = starting_measure(measure, entry.measure, settings.measure);
     let animate = animate.or(settings.animate).unwrap_or(true);
@@ -215,6 +242,8 @@ pub fn run(
             .and_then(|pane| herdr::cell_size(&pane)),
         folded: Default::default(),
         trail: Vec::new(),
+        pace: crate::log::pace(log_book.key.as_deref()),
+        log: Some(crate::log::Log::new(log_book)),
         chapter_pages: Vec::new(),
         spread: false,
         mode: Mode::Reading,
@@ -315,6 +344,19 @@ impl Reader {
                 view::text_size(size.0, size.1, self.measure),
                 self.attached.is_some(),
             );
+            // Pages passed through while typing a search are not read.
+            if !matches!(
+                self.mode,
+                Mode::Search {
+                    typing: Some(_),
+                    ..
+                }
+            ) {
+                let at = self.place(self.entry.at);
+                if let Some(log) = &mut self.log {
+                    log.shown(at);
+                }
+            }
 
             let (left, right) = self.views();
             let left_now = left.clone();
@@ -405,6 +447,10 @@ impl Reader {
             for (key, right) in std::mem::take(&mut keys) {
                 if self.handle_key(&key, right) {
                     self.save();
+                    let at = self.place(self.entry.at);
+                    if let Some(log) = &mut self.log {
+                        log.end(at);
+                    }
                     if let Some(s) = server {
                         s.hub.emit(EventData::ReaderClosed);
                     }
@@ -472,7 +518,7 @@ impl Reader {
                 }
                 let at = p.at.unwrap_or_else(|| self.layout.start_of(self.page()));
                 let page = self.layout.page_of(at) + 1;
-                self.entry.add_note(Note {
+                self.add_note(Note {
                     at,
                     anchor: p.anchor,
                     text: p.text.trim().to_string(),
@@ -562,7 +608,43 @@ impl Reader {
         p..(p + self.step()).min(self.layout.page_count())
     }
 
+    /// The open pages, what is left shown beside the last one's number.
     fn views(&self) -> (PageView, Option<PageView>) {
+        let (mut left, mut right) = self.open_views();
+        let remaining = self.remaining();
+        match &mut right {
+            Some(r) => r.remaining = remaining,
+            None if left.side == Side::Single => left.remaining = remaining,
+            None => {}
+        }
+        (left, right)
+    }
+
+    /// What is left: pages to the next chapter, and the time to the end of
+    /// the book at the pace pages have been turned.
+    fn remaining(&self) -> Option<String> {
+        let count = self.layout.page_count();
+        let last_open = (self.page() + self.step()).min(count).saturating_sub(1);
+        let to_chapter = self
+            .chapter_pages
+            .iter()
+            .find(|&&p| p > last_open)
+            .map(|&p| p - last_open - 1)
+            .filter(|&n| n > 0)
+            .map(|n| match n {
+                1 => "1 page left in chapter".to_string(),
+                n => format!("{n} pages left in chapter"),
+            });
+        let rest = count.saturating_sub(last_open + 1);
+        let to_end = self
+            .pace
+            .filter(|_| rest > 0)
+            .map(|pace| crate::log::duration(rest as f64 * pace) + " to the end");
+        let parts: Vec<String> = to_chapter.into_iter().chain(to_end).collect();
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+
+    fn open_views(&self) -> (PageView, Option<PageView>) {
         let p = self.page();
         if !self.spread {
             return (self.view(p, Side::Single), None);
@@ -595,6 +677,7 @@ impl Reader {
             status: None,
             margin_notes: Vec::new(),
             pictures: Vec::new(),
+            remaining: None,
         }
     }
 
@@ -787,6 +870,7 @@ impl Reader {
             width: self.layout.width,
             // The snackbar sits at the bottom right of the book.
             status: (side != Side::Left).then(|| self.toast()).flatten(),
+            remaining: None,
             margin_notes,
             pictures,
         }
@@ -1241,7 +1325,7 @@ impl Reader {
                 self.mode = Mode::Reading;
                 if !text.is_empty() {
                     let color = end.map(|_| self.marker);
-                    self.entry.add_note(Note {
+                    self.add_note(Note {
                         at,
                         anchor,
                         text,
@@ -1377,21 +1461,7 @@ impl Reader {
 
     /// The text from `from` up to `to`, lines joined by newlines.
     fn text_between(&self, from: Pos, to: Pos) -> String {
-        let mut out = String::new();
-        for line in from.line..=to.line.min(self.doc.lines.len().saturating_sub(1)) {
-            let chars: Vec<char> = self.doc.lines[line].text.chars().collect();
-            let a = if line == from.line { from.offset } else { 0 };
-            let b = if line == to.line {
-                to.offset
-            } else {
-                chars.len()
-            };
-            if line > from.line {
-                out.push('\n');
-            }
-            out.extend(chars.iter().take(b.min(chars.len())).skip(a));
-        }
-        out
+        self.doc.text_between(from, to)
     }
 
     /// The bookmark whose ribbon is drawn at cell (`col`, `row`) of a pane
@@ -1485,9 +1555,15 @@ impl Reader {
             match key {
                 "enter" => {
                     *typing = None;
+                    let (query, finds) = (query.clone(), hits.len());
                     // The whole search counts as one jump, from where it began.
                     if self.layout.page_of(origin) != self.page() {
                         self.leave(origin);
+                    }
+                    if let Some(log) = &mut self.log
+                        && !query.is_empty()
+                    {
+                        log.record(Logged::Searched { query, finds });
                     }
                 }
                 "esc" | "ctrl+c" => {
@@ -1632,7 +1708,7 @@ impl Reader {
         };
         match key {
             "m" => {
-                self.entry.add_note(Note {
+                self.add_note(Note {
                     at: from,
                     anchor: Anchor::Range,
                     text: String::new(),
@@ -1691,6 +1767,42 @@ impl Reader {
             self.unsent_turn = Some(turn);
         }
         self.go(page);
+    }
+
+    /// `at` as the reading log keeps it.
+    fn place(&self, at: Pos) -> crate::log::Place {
+        let chapter = self.doc.chapter_of(at.line).map(|c| c.title.clone());
+        crate::log::Place {
+            line: at.line,
+            offset: at.offset,
+            page: self.layout.page_of(at) + 1,
+            pages: self.layout.page_count(),
+            chapter,
+        }
+    }
+
+    /// Writes what happened at `at` in the reading log.
+    fn record(&mut self, event: impl FnOnce(crate::log::Place) -> Logged, at: Pos) {
+        let place = self.place(at);
+        if let Some(log) = &mut self.log {
+            log.record(event(place));
+        }
+    }
+
+    /// Keeps a note in the book, and in the reading log.
+    fn add_note(&mut self, note: Note) {
+        let quote = note.end.map(|end| self.text_between(note.at, end));
+        let (anchor, text) = (note.anchor, note.text.clone());
+        self.record(
+            |at| Logged::NoteAdded {
+                at,
+                anchor,
+                text,
+                quote,
+            },
+            note.at,
+        );
+        self.entry.add_note(note);
     }
 
     /// Goes to `page` as a jump, which `Return` can come back from.
@@ -1766,6 +1878,8 @@ impl Reader {
     /// book. The agent answers in its own pane, and is asked to keep a short
     /// answer in the book as a note where the question was asked.
     fn ask(&mut self, question: &str, anchor: Anchor, at: Pos, end: Option<Pos>) {
+        let q = question.to_string();
+        self.record(|at| Logged::Asked { at, question: q }, at);
         let agent = match herdr::find_agent(self.agent.as_deref()) {
             Ok(a) => a,
             Err(e) => {
@@ -1860,8 +1974,11 @@ impl Reader {
             let i = self.entry.marks.partition_point(|m| m.at <= at);
             self.entry.marks.insert(i, Mark { at, color });
             self.say(format!("Bookmarked p.{} ({})", page + 1, color.name()));
+            self.record(|at| Logged::BookmarkAdded { at, color }, at);
         } else {
             self.say("Bookmark removed".into());
+            let at = self.layout.start_of(page);
+            self.record(|at| Logged::BookmarkRemoved { at }, at);
         }
         self.save();
     }
@@ -2795,6 +2912,8 @@ mod tests {
             cell: None,
             folded: Default::default(),
             trail: Vec::new(),
+            log: None,
+            pace: None,
             socket: None,
             background: mpsc::channel(),
         };
@@ -3173,6 +3292,33 @@ mod tests {
         assert_eq!((r.page(), &r.mode), (3, &Mode::Reading));
         keys(&mut r, &["backspace"]);
         assert_eq!(r.page(), 0);
+    }
+
+    #[test]
+    fn what_is_left_is_shown_beside_the_number() {
+        let mut r = reader(&["a", "b", "c", "d", "e"], 1);
+        r.chapter_pages = vec![0, 3];
+        r.doc.chapters = [("One", 0), ("Two", 3)]
+            .map(|(title, line)| crate::doc::Chapter {
+                title: title.into(),
+                level: 1,
+                line,
+            })
+            .to_vec();
+        assert_eq!(
+            r.views().0.remaining.as_deref(),
+            Some("2 pages left in chapter")
+        );
+        r.pace = Some(90.0);
+        keys(&mut r, &["space", "space"]);
+        assert_eq!(
+            r.views().0.remaining.as_deref(),
+            Some("about 3 min to the end")
+        );
+        r.spread = true;
+        let (left, right) = r.views();
+        assert_eq!(left.remaining, None, "only beside the last open page");
+        assert!(right.unwrap().remaining.is_some());
     }
 
     #[test]

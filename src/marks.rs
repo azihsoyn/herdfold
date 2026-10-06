@@ -29,6 +29,12 @@ pub struct Entry {
     /// Which way the pages run, when set for this book with `D`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction: Option<Direction>,
+    /// How the book was last read, so the shelf can open it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<crate::formats::Format>,
+    /// The book's title, as it gave it (else its file name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// Which way a book's pages run.
@@ -265,6 +271,11 @@ fn read_store() -> Store {
 
 pub fn load(book: &str) -> Option<Entry> {
     read_store().books.remove(book)
+}
+
+/// Every book's entry, by the book's file.
+pub fn all() -> BTreeMap<String, Entry> {
+    read_store().books
 }
 
 /// Writes one book's entry, re-reading the file first so that other books

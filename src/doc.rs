@@ -181,6 +181,32 @@ pub struct Document {
     pub rtl: bool,
 }
 
+impl Document {
+    /// The text from `from` up to `to` (exclusive), lines joined by `\n`.
+    pub fn text_between(&self, from: crate::layout::Pos, to: crate::layout::Pos) -> String {
+        let mut out = String::new();
+        for line in from.line..=to.line.min(self.lines.len().saturating_sub(1)) {
+            let chars: Vec<char> = self.lines[line].text.chars().collect();
+            let a = if line == from.line { from.offset } else { 0 };
+            let b = if line == to.line {
+                to.offset
+            } else {
+                chars.len()
+            };
+            if line > from.line {
+                out.push('\n');
+            }
+            out.extend(chars.iter().take(b.min(chars.len())).skip(a));
+        }
+        out
+    }
+
+    /// The chapter `line` is in, if the input gave chapters.
+    pub fn chapter_of(&self, line: usize) -> Option<&Chapter> {
+        self.chapters.iter().rev().find(|c| c.line <= line)
+    }
+}
+
 pub fn expand_tabs(s: &str) -> String {
     if !s.contains('\t') {
         return s.to_string();

@@ -12,7 +12,17 @@ use clap::ValueEnum;
 
 use crate::doc::Document;
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Format {
     /// Plain text. No chapters.
     Text,

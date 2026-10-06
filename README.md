@@ -18,6 +18,10 @@ herdfold --format md README.md
 gh pr diff 123 | herdfold --format diff -
 ```
 
+`herdfold` alone opens the shelf: the books read before, the one last
+read first, each with how far it has got, where, and for how long. `Enter`
+opens one where it was left; closing it comes back to the shelf.
+
 Inside [herdr](https://herdr.dev) the pane splits in two and the book opens
 as a spread: left page in one pane, right page in the other, the text running
 on from one to the next. Elsewhere it shows one page at a time.
@@ -48,6 +52,9 @@ on from one to the next. Elsewhere it shows one page at a time.
   (`[see](#the-heading)`) count, as do an EPUB's links between its pages.
 - **Search** (`/` or `Ctrl-F`) finds as you type; `n` / `N` step through
   the finds, `l` lists them with the words around each.
+- **What is left** sits beside the page number: the pages to the end of
+  the chapter, and, once the reading log has seen you turn enough pages,
+  about how long the rest of the book will take at your pace.
 - **Your place is kept** per book, as a position in the text rather than a
   page number, so it survives a change of pane size.
 
@@ -64,6 +71,11 @@ on from one to the next. Elsewhere it shows one page at a time.
   mouse for this, since the terminal's own selection would run across
   both panes of a spread; `y` copies the chosen text.
 - `l` lists bookmarks and notes together.
+- **Take them away**: `herdfold note export --format epub the-book.epub`
+  prints what you wrote in a book as Markdown, under its chapters: each
+  marker's text quoted, each note, each question and its answer, then the
+  bookmarks. `--json` gives the same as data (`note_export` in
+  `herdfold api schema --json`).
 
 ## Pictures
 
@@ -74,6 +86,27 @@ the terminal's own image protocols (`imgcat` and the like) do not get
 through it; herdfold uses herdr's graphics API instead. Pictures inside an
 EPUB are kept in `~/.cache/herdfold/pictures` (`$XDG_CACHE_HOME` if set).
 Outside herdr, and for pictures on the web, their description is shown.
+
+## The reading log
+
+Each sitting with a book is a session, kept as a JSON Lines file of its
+own in `~/.local/share/herdfold/sessions/` (`$XDG_DATA_HOME` if set): when
+the book was opened and closed, the pages shown, bookmarks, notes and
+markers, searches and questions, one record a line.
+
+```sh
+herdfold log list [--book FILE]     # sessions, newest first, summed up
+herdfold log show SESSION           # one session, every record
+herdfold log export [--book FILE]   # every record, JSON Lines on stdout
+herdfold log import FILE            # records from export; kept ones stay
+herdfold log resume SESSION         # the book again, where that session left it
+```
+
+```json
+{"session":"20261005T120000Z-1a2b3c","time":"2026-10-05T12:00:00Z","type":"page_shown","at":{"line":120,"offset":0,"page":12,"pages":340,"chapter":"Ribbons and notes"}}
+```
+
+`herdfold api schema --json` gives the record's schema, under `log_record`.
 
 ## Asking the agent
 

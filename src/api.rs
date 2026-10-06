@@ -238,6 +238,8 @@ pub fn schema() -> Value {
         "schemas": {
             "error_response": one::<ErrorResponse>("error_response"),
             "event": one::<EventEnvelope>("event"),
+            "log_record": one::<crate::log::Record>("log_record"),
+            "note_export": one::<crate::export::Exported>("note_export"),
             "request": one::<Request>("request"),
             "success_response": one::<SuccessResponse>("success_response"),
         },
