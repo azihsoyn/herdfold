@@ -5,6 +5,7 @@ mod aozora;
 mod diff;
 mod epub;
 pub(crate) mod md;
+mod pdf;
 mod text;
 mod xml;
 
@@ -36,6 +37,9 @@ pub enum Format {
     /// Aozora Bunko text (青空文庫), Shift_JIS or UTF-8: ruby set after its
     /// text, notes dropped. Headings its notes name are chapters.
     Aozora,
+    /// PDF, read for its text: set again as the book's own pages, the
+    /// layout (columns, figures) not kept. The outline gives the chapters.
+    PdfText,
 }
 
 /// Reads `bytes` as `format`. Pictures a Markdown file points at are looked
@@ -52,6 +56,7 @@ pub fn load(
         Format::Diff => diff::load(&String::from_utf8_lossy(&bytes)),
         Format::Epub => epub::load(bytes)?,
         Format::Aozora => aozora::load(&bytes),
+        Format::PdfText => pdf::load(&bytes)?,
     };
     if doc.title.is_empty() {
         doc.title = name.to_string();
