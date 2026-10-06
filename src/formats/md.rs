@@ -426,31 +426,35 @@ impl Renderer {
         self.doc.lines.push(line);
     }
 
-    /// Sets a table in columns, the head row bold over a rule.
+    /// Sets a table: each row a line of its cells, set in columns when
+    /// the page is laid out (as wide as the page allows), the head row bold
+    /// over a rule.
     fn set_table(&mut self, t: Table) {
-        let cols = t.rows.iter().map(Vec::len).max().unwrap_or(0);
-        let widths: Vec<usize> = (0..cols)
-            .map(|c| {
-                t.rows
-                    .iter()
-                    .filter_map(|r| r.get(c))
-                    .map(|s| s.width())
-                    .max()
-                    .unwrap_or(0)
-            })
-            .collect();
         for (i, row) in t.rows.iter().enumerate() {
-            let cells: Vec<String> = (0..cols)
-                .map(|c| {
-                    let s = row.get(c).map(String::as_str).unwrap_or("");
-                    format!("{s}{}", " ".repeat(widths[c] - s.width()))
-                })
-                .collect();
-            let head = i == 0;
-            self.raw(cells.join(" │ ").trim_end(), style(|s| s.bold = head));
-            if head {
-                let rule: Vec<String> = widths.iter().map(|&w| "─".repeat(w)).collect();
-                self.raw(&rule.join("─┼─"), style(|s| s.dim = true));
+            let mut text = String::new();
+            let mut cells = Vec::new();
+            let mut at = 0;
+            for (c, cell) in row.iter().enumerate() {
+                if c > 0 {
+                    // Kept between cells in the text, so a search or a
+                    // copy does not run them together.
+                    text.push_str(" │ ");
+                    at += 3;
+                }
+                let n = cell.chars().count();
+                text.push_str(cell);
+                cells.push(at..at + n);
+                at += n;
+            }
+            let mut line = Line::new(text, Kind::Table);
+            line.cells = cells;
+            line.style = style(|s| s.bold = i == 0);
+            line.gutter = self.quote_bar();
+            self.doc.lines.push(line);
+            if i == 0 {
+                let mut rule = Line::new("", Kind::Table);
+                rule.gutter = self.quote_bar();
+                self.doc.lines.push(rule);
             }
         }
     }
@@ -632,10 +636,21 @@ mod tests {
     }
 
     #[test]
-    fn tables_are_set_in_columns() {
+    fn tables_keep_their_cells_for_the_page_to_set() {
+        let d = load("| a | bb |\n|---|---|\n| ccc | d |\n");
+        let rows: Vec<_> = d
+            .lines
+            .iter()
+            .map(|l| (l.text.as_str(), l.kind, l.cells.clone()))
+            .collect();
         assert_eq!(
-            texts("| a | bb |\n|---|---|\n| ccc | d |\n"),
-            ["a   │ bb", "────┼───", "ccc │ d"]
+            rows,
+            [
+                ("a │ bb", Kind::Table, vec![0..1, 4..6]),
+                ("", Kind::Table, vec![]),
+                ("ccc │ d", Kind::Table, vec![0..3, 6..7]),
+            ]
         );
+        assert!(d.lines[0].style.bold && !d.lines[2].style.bold);
     }
 }
