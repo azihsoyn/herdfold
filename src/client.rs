@@ -60,7 +60,7 @@ impl Client {
 
     /// Connects to the reader at `path`.
     pub fn connect_to(path: &std::path::Path, name: &'static str) -> Result<Self, CliError> {
-        let stream = UnixStream::connect(&path).map_err(|e| {
+        let stream = UnixStream::connect(path).map_err(|e| {
             CliError::new(
                 "reader_not_found",
                 format!("no reader at {}: {e}", path.display()),
