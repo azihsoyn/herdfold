@@ -8,18 +8,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::NAME;
+pub use crate::api::{Book, Place};
+use crate::api::{EventData as Event, Move};
 use crate::cli::CliError;
-use crate::formats::Format;
 use crate::layout::Pos;
-use crate::marks::{Anchor, Ribbon};
 
-/// One line of a session's log.
+/// One line of a session's log: an event of the socket API, as it was
+/// sent, with the session it belongs to and when.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Record {
     /// The session the record belongs to.
@@ -30,95 +31,6 @@ pub struct Record {
     pub event: Event,
 }
 
-/// What happened.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Event {
-    /// The book was opened; always the first record of a session.
-    SessionStarted {
-        book: Book,
-        at: Place,
-        /// The herdfold that wrote the log.
-        version: String,
-    },
-    /// Pages were turned, or gone to, and this one is open.
-    PageShown {
-        at: Place,
-    },
-    BookmarkAdded {
-        at: Place,
-        color: Ribbon,
-    },
-    BookmarkRemoved {
-        at: Place,
-    },
-    /// A note, or a highlighter marker (`anchor` is `range`, `quote` the
-    /// text under it), was written.
-    NoteAdded {
-        at: Place,
-        anchor: Anchor,
-        text: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        quote: Option<String>,
-    },
-    /// Words were searched for.
-    Searched {
-        query: String,
-        finds: usize,
-    },
-    /// The agent was asked a question.
-    Asked {
-        at: Place,
-        question: String,
-    },
-    /// The last page was reached.
-    Finished {
-        at: Place,
-    },
-    /// The book was closed; the last record of a session that ended well.
-    SessionEnded {
-        at: Place,
-        /// Different pages shown during the session.
-        pages_read: usize,
-        /// How long the book was open.
-        seconds: u64,
-    },
-}
-
-/// The book a session read.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct Book {
-    /// The book's file, as its place and marks are kept under; none for
-    /// stdin.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-    pub title: String,
-    pub format: Format,
-}
-
-/// A place in the book: in the text, and on the pages as they were set.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct Place {
-    pub line: usize,
-    pub offset: usize,
-    /// Page number, from 1, as the pages were set then.
-    pub page: usize,
-    /// Pages in the book, as set then.
-    pub pages: usize,
-    /// The chapter the place is in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chapter: Option<String>,
-}
-
-impl Place {
-    pub fn pos(&self) -> Pos {
-        Pos {
-            line: self.line,
-            offset: self.offset,
-        }
-    }
-}
-
 pub fn dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .filter(|v| !v.is_empty())
@@ -127,85 +39,43 @@ pub fn dir() -> Option<PathBuf> {
     Some(base.join(NAME).join("sessions"))
 }
 
-/// The log of the session going on, written as it happens.
+/// The log of the session going on: the events the reader sends, kept
+/// as they happen. The file is made with the session's first record.
 pub struct Log {
     session: String,
-    book: Book,
     file: Option<fs::File>,
-    started: Instant,
-    /// Pages shown, by where they start.
-    pages: BTreeSet<usize>,
-    /// The last place recorded as shown.
-    last: Option<Pos>,
-    /// Whether the last page has been reached this session.
-    finished: bool,
 }
 
 impl Log {
-    /// A log for a session with `book`, begun when its first page is shown.
-    pub fn new(book: Book) -> Self {
+    pub fn new() -> Self {
         Self {
             session: new_session_id(),
-            book,
             file: None,
-            started: Instant::now(),
-            pages: BTreeSet::new(),
-            last: None,
-            finished: false,
         }
     }
 
-    /// Notes that `at` is open, and whether the book's last page is (in a
-    /// spread, it may face `at`); the first time, the session starts.
-    pub fn shown(&mut self, at: Place, at_end: bool) {
-        if self.last == Some(at.pos()) {
+    /// Keeps `event`, if it is one the log keeps.
+    pub fn write(&mut self, event: &Event) {
+        if !event.logged() {
             return;
         }
-        self.last = Some(at.pos());
-        self.pages.insert(at.page);
-        let last_page = at_end && !self.finished;
         if self.file.is_none() {
             self.file = dir().and_then(|d| {
                 fs::create_dir_all(&d).ok()?;
                 fs::File::create_new(d.join(format!("{}.jsonl", self.session))).ok()
             });
-            let book = self.book.clone();
-            self.record(Event::SessionStarted {
-                book,
-                at: at.clone(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-            });
-        } else {
-            self.record(Event::PageShown { at: at.clone() });
         }
-        if last_page {
-            self.finished = true;
-            self.record(Event::Finished { at });
-        }
-    }
-
-    pub fn record(&mut self, event: Event) {
         let Some(file) = &mut self.file else {
             return;
         };
         let record = Record {
             session: self.session.clone(),
             time: rfc3339(SystemTime::now()),
-            event,
+            event: event.clone(),
         };
         if let Ok(line) = serde_json::to_string(&record) {
             let _ = writeln!(file, "{line}");
         }
-    }
-
-    pub fn end(&mut self, at: Place) {
-        let pages_read = self.pages.len();
-        let seconds = self.started.elapsed().as_secs();
-        self.record(Event::SessionEnded {
-            at,
-            pages_read,
-            seconds,
-        });
     }
 }
 
@@ -256,8 +126,18 @@ fn read(path: &std::path::Path) -> Vec<Record> {
     std::io::BufReader::new(file)
         .lines()
         .map_while(Result::ok)
-        .filter_map(|l| serde_json::from_str(&l).ok())
+        .filter_map(|l| parse(&l))
         .collect()
+}
+
+/// A record from a line, as written now or by 0.3.0, whose pages turned
+/// were `page_shown` with only a place.
+fn parse(line: &str) -> Option<Record> {
+    let mut v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v["type"] == "page_shown" && v.get("left").is_none() {
+        v["type"] = "reader_moved".into();
+    }
+    serde_json::from_value(v).ok()
 }
 
 /// Every session's records, oldest session first.
@@ -331,16 +211,22 @@ pub fn summarize(records: &[Record]) -> Option<Summary> {
         s.ended = r.time.clone();
         match &r.event {
             Event::SessionStarted { .. } => {}
-            Event::PageShown { at } => {
+            Event::ReaderMoved { at, .. } => {
                 pages.insert(at.page);
                 s.to = at.clone();
             }
             Event::BookmarkAdded { .. } => s.bookmarks += 1,
-            Event::BookmarkRemoved { .. } => {}
             Event::NoteAdded { .. } => s.notes += 1,
-            Event::Searched { .. } => s.searches += 1,
-            Event::Asked { .. } => s.questions += 1,
-            Event::Finished { .. } => s.finished = true,
+            Event::SearchDone { .. } => s.searches += 1,
+            Event::QuestionAsked { .. } => s.questions += 1,
+            Event::BookFinished { .. } => s.finished = true,
+            Event::PageShown { .. }
+            | Event::ReaderClosed
+            | Event::SettingsChanged { .. }
+            | Event::BookmarkChanged { .. }
+            | Event::BookmarkRemoved { .. }
+            | Event::NoteChanged { .. }
+            | Event::NoteRemoved { .. } => {}
             Event::SessionEnded {
                 at,
                 pages_read,
@@ -377,8 +263,17 @@ pub fn pace(book: Option<&str>) -> Option<f64> {
             }
             let mut last: Option<(usize, f64)> = None;
             for r in records {
-                let (Event::PageShown { at } | Event::SessionStarted { at, .. }) = &r.event else {
-                    continue;
+                // Pace is from turning, not from jumps.
+                let at = match &r.event {
+                    Event::SessionStarted { at, .. } => at,
+                    Event::ReaderMoved { at, how } => {
+                        if *how != Move::Turn {
+                            last = None;
+                            continue;
+                        }
+                        at
+                    }
+                    _ => continue,
                 };
                 let Some(t) = seconds_of(&r.time) else {
                     continue;
@@ -573,6 +468,8 @@ fn canonical(p: PathBuf) -> Result<String, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formats::Format;
+    use crate::marks::Anchor;
 
     fn place(page: usize) -> Place {
         Place {
@@ -606,7 +503,7 @@ mod tests {
         let r = Record {
             session: "s".into(),
             time: "t".into(),
-            event: Event::Searched {
+            event: Event::SearchDone {
                 query: "cat".into(),
                 finds: 2,
             },
@@ -614,9 +511,27 @@ mod tests {
         let line = serde_json::to_string(&r).unwrap();
         assert_eq!(
             line,
-            r#"{"session":"s","time":"t","type":"searched","query":"cat","finds":2}"#
+            r#"{"session":"s","time":"t","type":"search_done","query":"cat","finds":2}"#
         );
         assert_eq!(serde_json::from_str::<Record>(&line).unwrap(), r);
+    }
+
+    #[test]
+    fn logs_written_by_0_3_0_still_read() {
+        let old = r#"{"session":"s","time":"t","type":"page_shown","at":{"line":1,"offset":0,"page":2,"pages":9}}"#;
+        let r = parse(old).unwrap();
+        assert!(matches!(
+            r.event,
+            Event::ReaderMoved {
+                how: Move::Turn,
+                ..
+            }
+        ));
+        let old = r#"{"session":"s","time":"t","type":"finished","at":{"line":1,"offset":0,"page":9,"pages":9}}"#;
+        assert!(matches!(
+            parse(old).unwrap().event,
+            Event::BookFinished { .. }
+        ));
     }
 
     #[test]
@@ -640,7 +555,13 @@ mod tests {
                     version: "x".into(),
                 },
             ),
-            rec("2", Event::PageShown { at: place(4) }),
+            rec(
+                "2",
+                Event::ReaderMoved {
+                    at: place(4),
+                    how: Move::Turn,
+                },
+            ),
             rec(
                 "3",
                 Event::NoteAdded {
@@ -648,9 +569,17 @@ mod tests {
                     anchor: Anchor::Page,
                     text: "n".into(),
                     quote: None,
+                    by: crate::marks::Author::Reader,
+                    question: None,
                 },
             ),
-            rec("4", Event::PageShown { at: place(5) }),
+            rec(
+                "4",
+                Event::ReaderMoved {
+                    at: place(5),
+                    how: Move::Jump,
+                },
+            ),
         ];
         let s = summarize(&records).unwrap();
         assert!(!s.finished);

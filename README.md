@@ -208,29 +208,57 @@ run.
 
 ## Socket API
 
-The reader speaks herdr's protocol: newline-delimited JSON over a Unix
-socket, whose path it hands to the panes it opens as `HERDFOLD_SOCKET_PATH`.
+Everything the reader does is a call on its socket, in herdr's protocol:
+newline-delimited JSON over a Unix socket. The keys make the same calls,
+and every change is sent as an event, so a pane, an agent or a script can
+do whatever a reader can, and see whatever a reader does.
 
 ```
-{"id":"1","method":"ping","params":{}}
-{"id":"1","result":{"type":"pong","version":"0.3.0","protocol":1}}
+{"id":"1","method":"reader.go_to","params":{"chapter":2}}
+{"id":"1","result":{"type":"moved","at":{"line":12,"offset":0,"page":3,"pages":3,"chapter":"Where it leads"}}}
 
-{"id":"2","method":"reader.send_keys","params":{"keys":["space"]}}
-{"id":"2","result":{"type":"ok"}}
-
-{"id":"3","method":"events.subscribe","params":{"subscriptions":[{"type":"page.shown"}]}}
-{"id":"3","result":{"type":"subscription_started"}}
-{"event":"page_shown","data":{"type":"page_shown","left":{..},"right":{..}}}
+{"id":"2","method":"events.subscribe","params":{"subscriptions":[{"type":"note.added"}]}}
+{"id":"2","result":{"type":"subscription_started"}}
+{"event":"note_added","data":{"type":"note_added","at":{..},"anchor":"page","text":"..","by":"agent"}}
 ```
 
-The right-hand page is drawn by `herdfold reader attach`, an ordinary
-client of this API, which passes its keys and mouse presses back with
-`reader.send_keys` and `reader.send_mouse`. `note.add` writes a note into
-the open book (`herdfold note add` is the same from a shell, which is how
-an agent answers). Failures are `{"id":..,"error":{"code":..,"message":..}}`.
-`herdfold api schema --json` prints the full schema; like herdr's own
-commands, CLI failures are written to stderr as
-`{"id":"cli:<group>:<command>","error":{..}}` with exit code 1.
+| Methods | |
+| --- | --- |
+| `reader.state` | what is open, where, and how it is set |
+| `reader.turn` · `reader.go_to` · `reader.back` | turn, jump (to a page, a chapter or a place), go back along the jumps |
+| `reader.set` | direction, vertical writing, row length, animation, how notes show |
+| `reader.close` | close the book |
+| `contents.list` · `search.run` | the chapters; finds, without moving |
+| `link.list` · `link.follow` | notes and cross-references, and going where one leads |
+| `bookmark.list` · `.add` · `.update` · `.remove` | ribbons |
+| `note.list` · `.add` · `.update` · `.remove` | notes and markers |
+| `question.ask` | ask an agent beside the book |
+
+Events: `session.started`, `reader.moved` (by a turn, a jump or going
+back), `bookmark.added`/`changed`/`removed`, `note.added`/`changed`/`removed`,
+`search.done`, `question.asked`, `book.finished`, `settings.changed`,
+`session.ended`, `reader.closed`, and `page.shown` (the pages as drawn,
+which the right-hand pane draws from). The reading log is these same
+events, each with its session and time.
+
+Each method is a command too, answering as herdr's do
+(`{"id":"cli:<group>:<command>","result":{..}}`, failures on stderr with
+exit code 1), and `herdfold events [TYPE...]` prints the events as they
+happen:
+
+```sh
+herdfold reader state
+herdfold reader go-to --chapter 2
+herdfold bookmark add --color blue
+herdfold note add "a short answer"
+herdfold search run "ribbon"
+herdfold events note.added reader.moved
+```
+
+They talk to the reader `HERDFOLD_SOCKET_PATH` names (the reader hands it
+to the panes it opens), else to the one reader open; `herdfold reader
+list` shows the readers open, their sockets in `/tmp/herdfold-<uid>/`.
+`herdfold api schema --json` prints the full schema.
 
 ## Install
 

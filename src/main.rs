@@ -26,6 +26,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+use api::{Call, EmptyParams, IndexParams};
 use formats::Format;
 
 pub const NAME: &str = env!("CARGO_PKG_NAME");
@@ -88,6 +89,26 @@ enum Command {
     /// The reading log: one JSON Lines file a session
     #[command(subcommand)]
     Log(LogCommand),
+    /// The open book's contents
+    #[command(subcommand)]
+    Contents(ContentsCommand),
+    /// Search the open book
+    #[command(subcommand)]
+    Search(SearchCommand),
+    /// Links in the open book: notes and cross-references
+    #[command(subcommand)]
+    Link(LinkCommand),
+    /// Bookmarks in the open book
+    #[command(subcommand)]
+    Bookmark(BookmarkCommand),
+    /// Ask an agent about the open book
+    #[command(subcommand)]
+    Question(QuestionCommand),
+    /// Print the open reader's events as they happen, one JSON line each
+    Events {
+        /// Event types (e.g. `note.added`, `reader.moved`) [default: all but page.shown].
+        types: Vec<String>,
+    },
     /// Inspect the socket API
     #[command(subcommand)]
     Api(ApiCommand),
@@ -128,6 +149,19 @@ enum NoteCommand {
         #[arg(long)]
         question: Option<String>,
     },
+    /// The notes in the open book
+    List,
+    /// Rewrite a note, or recolour a marker
+    Update {
+        index: usize,
+        #[arg(long)]
+        text: Option<String>,
+        #[arg(long, value_enum)]
+        color: Option<marks::Ribbon>,
+    },
+    Remove {
+        index: usize,
+    },
     /// Print the notes, markers and bookmarks written in a book, as Markdown
     Export {
         /// How to read the book. Never guessed.
@@ -167,6 +201,106 @@ enum LogCommand {
 enum ReaderCommand {
     /// Draw the right-hand page of the reader at $HERDFOLD_SOCKET_PATH
     Attach,
+    /// List the readers open on this machine, with what each has open
+    List,
+    /// What the reader has open, where, and how it is set
+    State,
+    /// Turn the page
+    Turn {
+        #[arg(value_enum, default_value = "forward")]
+        direction: api::TurnDirection,
+    },
+    /// Go to a page, a chapter or a place (a jump `reader back` comes back from)
+    GoTo {
+        /// Page, from 1.
+        #[arg(long, conflicts_with_all = ["chapter", "line"])]
+        page: Option<usize>,
+        /// Chapter, by its index in `contents list`.
+        #[arg(long, conflicts_with = "line")]
+        chapter: Option<usize>,
+        /// Source line.
+        #[arg(long)]
+        line: Option<usize>,
+        /// Character offset into that line.
+        #[arg(long, requires = "line")]
+        offset: Option<usize>,
+    },
+    /// Go back to where the last jump left from
+    Back,
+    /// Change how the book is set
+    Set {
+        #[arg(long, value_enum)]
+        direction: Option<marks::Direction>,
+        #[arg(long, value_enum)]
+        writing: Option<marks::Writing>,
+        /// Longest row, in columns.
+        #[arg(long)]
+        measure: Option<usize>,
+        /// Draw page turns.
+        #[arg(long)]
+        animation: Option<bool>,
+        #[arg(long, value_enum)]
+        note_display: Option<marks::NoteDisplay>,
+    },
+    /// Close the book
+    Close,
+}
+
+#[derive(Subcommand)]
+enum ContentsCommand {
+    /// The chapters, with the pages they open on
+    List,
+}
+
+#[derive(Subcommand)]
+enum SearchCommand {
+    /// Find words in the book (nothing moves)
+    Run { query: String },
+}
+
+#[derive(Subcommand)]
+enum LinkCommand {
+    /// The links, with where they lead
+    List {
+        /// Only those on the open pages.
+        #[arg(long)]
+        open: bool,
+    },
+    /// Go where a link leads
+    Follow { index: usize },
+}
+
+#[derive(Subcommand)]
+enum BookmarkCommand {
+    List,
+    /// Bookmark a page [default: the first open page]
+    Add {
+        #[arg(long)]
+        page: Option<usize>,
+        #[arg(long, value_enum)]
+        color: Option<marks::Ribbon>,
+    },
+    /// Recolour a bookmark
+    Update {
+        index: usize,
+        #[arg(long, value_enum)]
+        color: marks::Ribbon,
+    },
+    Remove {
+        index: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum QuestionCommand {
+    /// Ask about the open pages, or a place (the agent answers in its pane)
+    Ask {
+        question: String,
+        #[arg(long)]
+        line: Option<usize>,
+        #[arg(long, requires = "line")]
+        offset: Option<usize>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -193,9 +327,6 @@ fn main() -> Result<ExitCode> {
         highlight::use_theme(theme);
     }
     match cli.command {
-        Some(Command::Reader(ReaderCommand::Attach)) => {
-            Ok(cli::finish("reader:attach", attach::run()))
-        }
         Some(Command::Note(NoteCommand::Add {
             text,
             line,
@@ -207,6 +338,60 @@ fn main() -> Result<ExitCode> {
             let params = note::params(text, note::place(line, offset), anchor, by, question);
             Ok(cli::finish("note:add", note::add(params)))
         }
+        Some(Command::Reader(r)) => Ok(reader_command(r)),
+        Some(Command::Contents(ContentsCommand::List)) => Ok(cli::finish(
+            "contents:list",
+            cli::call("contents:list", Call::ContentsList(EmptyParams {})),
+        )),
+        Some(Command::Search(SearchCommand::Run { query })) => Ok(cli::finish(
+            "search:run",
+            cli::call(
+                "search:run",
+                Call::SearchRun(api::SearchRunParams { query }),
+            ),
+        )),
+        Some(Command::Link(LinkCommand::List { open })) => Ok(cli::finish(
+            "link:list",
+            cli::call("link:list", Call::LinkList(api::LinkListParams { open })),
+        )),
+        Some(Command::Link(LinkCommand::Follow { index })) => Ok(cli::finish(
+            "link:follow",
+            cli::call("link:follow", Call::LinkFollow(IndexParams { index })),
+        )),
+        Some(Command::Bookmark(b)) => Ok(bookmark_command(b)),
+        Some(Command::Question(QuestionCommand::Ask {
+            question,
+            line,
+            offset,
+        })) => {
+            let call = Call::QuestionAsk(api::QuestionAskParams {
+                question,
+                at: note::place(line, offset),
+                end: None,
+                anchor: if line.is_some() {
+                    marks::Anchor::Line
+                } else {
+                    marks::Anchor::Page
+                },
+            });
+            Ok(cli::finish("question:ask", cli::call("question:ask", call)))
+        }
+        Some(Command::Events { types }) => Ok(cli::finish("events", cli::events(types))),
+        Some(Command::Note(NoteCommand::List)) => Ok(cli::finish(
+            "note:list",
+            cli::call("note:list", Call::NoteList(EmptyParams {})),
+        )),
+        Some(Command::Note(NoteCommand::Update { index, text, color })) => Ok(cli::finish(
+            "note:update",
+            cli::call(
+                "note:update",
+                Call::NoteUpdate(api::NoteUpdateParams { index, text, color }),
+            ),
+        )),
+        Some(Command::Note(NoteCommand::Remove { index })) => Ok(cli::finish(
+            "note:remove",
+            cli::call("note:remove", Call::NoteRemove(IndexParams { index })),
+        )),
         Some(Command::Note(NoteCommand::Export { format, file, json })) => {
             Ok(cli::finish("note:export", export::run(format, file, json)))
         }
@@ -297,6 +482,69 @@ fn main() -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+fn reader_command(r: ReaderCommand) -> ExitCode {
+    let (id, call) = match r {
+        ReaderCommand::Attach => return cli::finish("reader:attach", attach::run()),
+        ReaderCommand::List => return cli::finish("reader:list", cli::readers()),
+        ReaderCommand::State => ("reader:state", Call::ReaderState(EmptyParams {})),
+        ReaderCommand::Turn { direction } => (
+            "reader:turn",
+            Call::ReaderTurn(api::ReaderTurnParams { direction }),
+        ),
+        ReaderCommand::GoTo {
+            page,
+            chapter,
+            line,
+            offset,
+        } => (
+            "reader:go-to",
+            Call::ReaderGoTo(api::ReaderGoToParams {
+                page,
+                chapter,
+                at: note::place(line, offset),
+            }),
+        ),
+        ReaderCommand::Back => ("reader:back", Call::ReaderBack(EmptyParams {})),
+        ReaderCommand::Set {
+            direction,
+            writing,
+            measure,
+            animation,
+            note_display,
+        } => (
+            "reader:set",
+            Call::ReaderSet(api::ReaderSetParams {
+                direction,
+                writing,
+                measure,
+                animation,
+                note_display,
+            }),
+        ),
+        ReaderCommand::Close => ("reader:close", Call::ReaderClose(EmptyParams {})),
+    };
+    cli::finish(id, cli::call(id, call))
+}
+
+fn bookmark_command(b: BookmarkCommand) -> ExitCode {
+    let (id, call) = match b {
+        BookmarkCommand::List => ("bookmark:list", Call::BookmarkList(EmptyParams {})),
+        BookmarkCommand::Add { page, color } => (
+            "bookmark:add",
+            Call::BookmarkAdd(api::BookmarkAddParams { page, color }),
+        ),
+        BookmarkCommand::Update { index, color } => (
+            "bookmark:update",
+            Call::BookmarkUpdate(api::BookmarkUpdateParams { index, color }),
+        ),
+        BookmarkCommand::Remove { index } => (
+            "bookmark:remove",
+            Call::BookmarkRemove(IndexParams { index }),
+        ),
+    };
+    cli::finish(id, cli::call(id, call))
 }
 
 fn open(

@@ -110,6 +110,8 @@ fn draw(terminal: &mut ratatui::DefaultTerminal, client: &mut Client) -> Result<
                         page = right;
                     }
                     EventData::ReaderClosed => return Ok(()),
+                    // Subscribed to the pages only.
+                    _ => {}
                 },
                 Ok(_) => {}
                 Err(mpsc::TryRecvError::Empty) => break,
