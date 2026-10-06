@@ -29,9 +29,11 @@ on from one to the next. Elsewhere it shows one page at a time.
 ## Reading
 
 - **Formats are named, never guessed**: `text`, `md` (rendered: headings,
-  emphasis, lists, quotes, code blocks, tables), `diff` (each file a
-  chapter, additions and removals coloured; stdin works), `epub` and `aozora` (Aozora Bunko's text, in
-  Shift_JIS or UTF-8; the headings its notes name are the chapters).
+  emphasis, lists, quotes, code blocks, tables fitted to the page with
+  their cells wrapped), `diff` (each file a chapter, additions and
+  removals coloured; stdin works), `epub`, and `aozora` (Aozora Bunko's
+  text, in Shift_JIS or UTF-8; the headings its notes name are the
+  chapters).
 - **Code is highlighted** by its language, with the grammars bat
   bundles: a Markdown fence's language, an EPUB's `language-…` or
   `sourceCode …` class, a diff's file extension. The default theme, `ansi`,
@@ -103,6 +105,8 @@ the terminal's own image protocols (`imgcat` and the like) do not get
 through it; herdfold uses herdr's graphics API instead. Pictures inside an
 EPUB are kept in `~/.cache/herdfold/pictures` (`$XDG_CACHE_HOME` if set).
 Outside herdr, and for pictures on the web, their description is shown.
+herdr 0.9 sets pictures in compatible terminals as it comes; before that,
+with `experimental.kitty_graphics` switched on.
 
 ## The reading log
 
@@ -140,7 +144,7 @@ book as a note (`✦`) by running `herdfold note add`.
 | `Space` / `→` | turn the page (`←` when the book runs right to left) |
 | `b` / `←` | turn back |
 | `g` | contents |
-| `Backspace` / `Ctrl-O` | back to where the last jump (contents, list, search) left from |
+| `Backspace` / `Ctrl-O` | back to where the last jump (contents, list, search, link) left from |
 | `f` | links here: `Enter` to see where one leads, again to go |
 | `/` or `Ctrl-F` | search |
 | `m` | bookmark the page (again to remove) |
@@ -178,24 +182,27 @@ help = "?"
 ask = "A"
 ```
 
-The actions: `next_page` `previous_page` `contents` `go_back` `follow_link` `search` `bookmark`
-`bookmark_color` `note` `choose_row` `list` `note_display` `ask`
-`shorter_rows` `longer_rows` `animation` `direction` `vertical` `help` `tip` `up` `down`
-`enter` `remove` `back` `quit`. `herdfold config check` reports what is wrong
+The actions: `next_page` `previous_page` `contents` `go_back`
+`follow_link` `search` `bookmark` `bookmark_color` `note` `choose_row`
+`list` `note_display` `ask` `shorter_rows` `longer_rows` `animation`
+`direction` `vertical` `help` `tip` `up` `down` `enter` `remove` `back`
+`quit`. `herdfold config check` reports what is wrong
 with the file; `herdfold config reset-keys` backs it up and removes `[keys]`.
 The key list (`h`) and the tips show the keys as bound.
 
-Your place, bookmarks, notes, row length and direction are kept per book in
-`~/.local/share/herdfold/marks.json`; choices that hold for every book (the
+Your place, bookmarks, notes, row length, direction and writing are kept
+per book in `~/.local/share/herdfold/marks.json`; choices that hold for every book (the
 animation, how notes are shown, the colours last chosen, tips) in
 `settings.json` beside it (`$XDG_DATA_HOME` if set). `--measure COLS`,
-`--no-animation` and `--no-spread` decide those for one run.
+`--no-animation`, `--no-spread` and `--theme NAME` decide those for one
+run.
 
 ## What it does not do
 
 - It never reads the text for meaning: pages are cut by height, and
   chapters come only from the input (an EPUB's table of contents, Markdown
-  headings, the files of a diff). Plain text has none, and none are guessed.
+  headings, the files of a diff, Aozora's heading notes). Plain text has
+  none, and none are guessed.
 - It never guesses the format.
 - It never scrolls. Only turning.
 
@@ -206,7 +213,7 @@ socket, whose path it hands to the panes it opens as `HERDFOLD_SOCKET_PATH`.
 
 ```
 {"id":"1","method":"ping","params":{}}
-{"id":"1","result":{"type":"pong","version":"0.2.0","protocol":1}}
+{"id":"1","result":{"type":"pong","version":"0.3.0","protocol":1}}
 
 {"id":"2","method":"reader.send_keys","params":{"keys":["space"]}}
 {"id":"2","result":{"type":"ok"}}
