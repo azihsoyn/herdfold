@@ -1,6 +1,6 @@
 [package]
 name = "herdfold"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "Long text, laid out as facing pages you turn: a book reader across two herdr panes, with bookmarks, notes and an agent to ask"
 license = "MIT OR Apache-2.0"
