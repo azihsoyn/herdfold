@@ -1,14 +1,14 @@
-# The README demo: a spread across two herdr panes, turned, the contents
-# drawer folded, a ribbon hung, a note kept, a search stepped through, the
-# book turned round to read right to left. Regenerate from the repository
-# root with:
+# The README demo, three books across two herdr panes: a Markdown book
+# whose footnote is followed and come back from, Rashomon set in vertical
+# columns and turned right to left, and a change to herdfold with its code
+# highlighted. Regenerate from the repository root with:
 #   cargo build --release && vhs demo/demo.tape
 #   XDG_CONFIG_HOME=/tmp/hfd/cfg herdr session stop hfdemo
 # It runs a herdr session of its own (hfdemo) under /tmp/hfd, prepared by
 # demo/setup.sh, with a bare shell and no config of yours.
 Output demo.gif
 
-Set FontSize 14
+Set FontSize 15
 Set Width 1600
 Set Height 900
 Set Theme "Catppuccin Mocha"
@@ -43,74 +43,38 @@ Type "herdfold --format md book.md"
 Sleep 400ms
 Enter
 Sleep 3.5s
-# Put the tip away, and turn
+# A footnote: point at it, see where it leads, go there, come back
+Type "f"
+Sleep 1.8s
 Enter
-Sleep 1.2s
+Sleep 2.8s
+Enter
+Sleep 2.2s
+Backspace
+Sleep 2.2s
 Space
-Sleep 1.6s
-Space
-Sleep 1.6s
-# The contents: fold a chapter's sections, open them, go to another
-Type "g"
-Sleep 1.5s
-Up
-Sleep 350ms
-Up
-Sleep 350ms
-Up
-Sleep 350ms
-Up
-Sleep 350ms
-Up
-Sleep 800ms
-Left
+Sleep 2.2s
+Type "q"
 Sleep 1.2s
-Right
-Sleep 1.2s
-Down
-Sleep 600ms
-Enter
-Sleep 1.5s
-# A ribbon, and its colour
-Type "m"
-Sleep 1.2s
-Type "c"
-Sleep 1.2s
-# A note on the page
-Type "n"
-Sleep 500ms
-Type "Worth reading twice."
-Sleep 500ms
-Enter
-Sleep 2s
-# Search, step, and the list of finds
-Type "/"
+# Rashomon, from Aozora Bunko: set in vertical columns, turned right to left
+Type "herdfold --format aozora rashomon.txt"
 Sleep 400ms
-Type "ribbon"
-Sleep 1s
 Enter
-Sleep 600ms
-Type "n"
-Sleep 1.2s
-Type "l"
-Sleep 1.8s
-Down
-Sleep 500ms
-Enter
-Sleep 1.5s
-Escape
-Sleep 800ms
-# Turned round: pages that run right to left
-Type "D"
-Sleep 1.5s
+Sleep 3.5s
+Type "V"
+Sleep 3s
 Space
-Sleep 1.8s
-Type "D"
-Sleep 1.2s
-# The keys
-Type "h"
 Sleep 2.5s
-Escape
-Sleep 800ms
+Space
+Sleep 3s
+Type "q"
+Sleep 1.2s
+# A pull request's change, each file a chapter, its code highlighted
+Type "herdfold --format diff change.diff"
+Sleep 400ms
+Enter
+Sleep 3.5s
+Space
+Sleep 3s
 Type "q"
 Sleep 1.2s
