@@ -9,7 +9,7 @@ homepage = "https://github.com/azihsoyn/herdfold"
 readme = "README.md"
 keywords = ["tui", "reader", "epub", "markdown", "herdr"]
 categories = ["command-line-utilities", "text-processing"]
-exclude = ["demo/", "demo.gif"]
+exclude = ["demo/", "demo.gif", "assets/"]
 
 [dependencies]
 anyhow = "1.0.104"
