@@ -1,6 +1,6 @@
-# herdfold
-
-Long text, laid out as facing pages you turn.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/azihsoyn/herdfold/main/assets/logo.svg" width="620" alt="herdfold — long text, laid out as facing pages you turn">
+</p>
 
 A fold is where a herder keeps the herd, and what a sheet of paper becomes
 when it is folded into two facing pages; here it is two herdr panes, twofold.
