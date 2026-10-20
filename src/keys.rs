@@ -75,6 +75,12 @@ pub const ACTIONS: &[(Cmd, &str, &[&str], &str)] = &[
         "notes as footnotes / in margin / marks",
     ),
     (Cmd::Ask, "ask", &["?"], "ask the agent about these pages"),
+    (
+        Cmd::Voice,
+        "read_aloud",
+        &["r"],
+        "read aloud from here (again to stop)",
+    ),
     (Cmd::Narrower, "shorter_rows", &["<"], "shorter rows"),
     (Cmd::Wider, "longer_rows", &[">"], "longer rows"),
     (

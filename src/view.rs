@@ -250,6 +250,8 @@ pub enum Cmd {
     Return,
     /// Choose a link on the open pages, to see where it leads.
     Follow,
+    /// Read the book aloud from here, or stop.
+    Voice,
 }
 
 /// A key press under herdr's key names (`space`, `esc`, `ctrl+c`, `b`, ...),

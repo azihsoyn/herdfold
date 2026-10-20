@@ -5,7 +5,7 @@
 //! dropped, except those naming headings (`［＃「第一章」は中見出し］`),
 //! which give the chapters. The block explaining the markup is left out.
 
-use crate::doc::{Chapter, Document, Kind, Line, Run, Style};
+use crate::doc::{Chapter, Document, Kind, Line, Ruby, Run, Style};
 
 pub fn load(bytes: &[u8]) -> Document {
     let text = match std::str::from_utf8(bytes) {
@@ -41,7 +41,7 @@ pub fn load(bytes: &[u8]) -> Document {
             continue;
         }
         let heading = heading_of(raw);
-        let (text, runs) = set(raw);
+        let (text, runs, ruby) = set(raw);
         // Blank lines either side of the left-out block come to one.
         let blank = text.trim().is_empty();
         if blank && doc.lines.last().is_some_and(|l| l.text.is_empty()) {
@@ -49,6 +49,7 @@ pub fn load(bytes: &[u8]) -> Document {
         }
         let mut line = Line::new(if blank { "" } else { text.trim_end() }, Kind::Body);
         line.runs = runs;
+        line.ruby = ruby;
         if let Some((title, level)) = heading {
             line.kind = Kind::Heading;
             line.style = Style {
@@ -93,11 +94,12 @@ fn is_kanji(c: char) -> bool {
 }
 
 /// A line set as it reads: notes dropped, each ruby's reading in brackets
-/// after its text, dimmed.
-fn set(line: &str) -> (String, Vec<Run>) {
+/// after its text, dimmed; and where each reading and its text are.
+fn set(line: &str) -> (String, Vec<Run>, Vec<Ruby>) {
     let chars: Vec<char> = line.chars().collect();
     let mut out: Vec<char> = Vec::new();
     let mut runs = Vec::new();
+    let mut ruby = Vec::new();
     // Where in `out` the text a bar marks for ruby starts.
     let mut bar: Option<usize> = None;
     let mut i = 0;
@@ -139,6 +141,10 @@ fn set(line: &str) -> (String, Vec<Run>) {
                     out.push('（');
                     out.extend(&chars[i + 1..close]);
                     out.push('）');
+                    ruby.push(Ruby {
+                        base: base..start,
+                        reading: start + 1..out.len() - 1,
+                    });
                     runs.push(Run {
                         start,
                         end: out.len(),
@@ -156,7 +162,7 @@ fn set(line: &str) -> (String, Vec<Run>) {
         }
         i += 1;
     }
-    (out.into_iter().collect(), runs)
+    (out.into_iter().collect(), runs, ruby)
 }
 
 #[cfg(test)]
@@ -165,9 +171,22 @@ mod tests {
 
     #[test]
     fn ruby_is_set_after_its_text() {
-        let (text, runs) = set("吾輩《わがはい》は｜猫である《ねこである》。");
+        let (text, runs, ruby) = set("吾輩《わがはい》は｜猫である《ねこである》。");
         assert_eq!(text, "吾輩（わがはい）は猫である（ねこである）。");
         assert_eq!((runs[0].start, runs[0].end), (2, 8));
+        assert_eq!(
+            ruby,
+            [
+                Ruby {
+                    base: 0..2,
+                    reading: 3..7
+                },
+                Ruby {
+                    base: 9..13,
+                    reading: 14..19
+                }
+            ]
+        );
     }
 
     #[test]

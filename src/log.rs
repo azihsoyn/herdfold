@@ -227,7 +227,9 @@ pub fn summarize(records: &[Record]) -> Option<Summary> {
             | Event::BookmarkRemoved { .. }
             | Event::NoteChanged { .. }
             | Event::NoteRemoved { .. }
-            | Event::AnchorsChecked { .. } => {}
+            | Event::AnchorsChecked { .. }
+            | Event::VoiceStarted { .. }
+            | Event::VoiceStopped { .. } => {}
             Event::SessionEnded {
                 at,
                 pages_read,
@@ -263,9 +265,21 @@ pub fn pace(book: Option<&str>) -> Option<f64> {
                 continue;
             }
             let mut last: Option<(usize, f64)> = None;
+            let mut listening = false;
             for r in records {
-                // Pace is from turning, not from jumps.
+                // Pace is from turning, not from jumps, nor from a voice
+                // reading aloud.
                 let at = match &r.event {
+                    Event::VoiceStarted { .. } => {
+                        listening = true;
+                        last = None;
+                        continue;
+                    }
+                    Event::VoiceStopped { .. } => {
+                        listening = false;
+                        continue;
+                    }
+                    _ if listening => continue,
                     Event::SessionStarted { at, .. } => at,
                     Event::ReaderMoved { at, how } => {
                         if *how != Move::Turn {

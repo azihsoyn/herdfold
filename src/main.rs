@@ -17,8 +17,10 @@ mod note;
 mod pictures;
 mod server;
 mod shelf;
+mod spoken;
 mod turn;
 mod view;
+mod voice;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -105,6 +107,12 @@ enum Command {
     /// Ask an agent about the open book
     #[command(subcommand)]
     Question(QuestionCommand),
+    /// The open book's text as it is read aloud
+    #[command(subcommand)]
+    Text(TextCommand),
+    /// Read the open book aloud, with a voice of your choosing
+    #[command(subcommand)]
+    Voice(VoiceCommand),
     /// Print the open reader's events as they happen, one JSON line each
     Events {
         /// Event types (e.g. `note.added`, `reader.moved`) [default: all but page.shown].
@@ -305,6 +313,58 @@ enum QuestionCommand {
 }
 
 #[derive(Subcommand)]
+enum TextCommand {
+    /// The sentences on the open pages, or from a place (nothing moves)
+    Read {
+        /// Source line to begin at [default: the open pages' start].
+        #[arg(long)]
+        line: Option<usize>,
+        #[arg(long, requires = "line")]
+        offset: Option<usize>,
+        /// Pages' worth [default: the pages open].
+        #[arg(long)]
+        pages: Option<usize>,
+        /// What of a ruby is read.
+        #[arg(long, value_enum, default_value = "reading")]
+        ruby: spoken::RubyReading,
+    },
+}
+
+#[derive(Subcommand)]
+enum VoiceCommand {
+    /// Start reading aloud from the open pages, turning them as it goes
+    Start {
+        /// The voice, by its name in `voice engines` [default: as config.toml's [voice] names, else system].
+        #[arg(long)]
+        engine: Option<String>,
+        #[arg(long)]
+        line: Option<usize>,
+        #[arg(long, requires = "line")]
+        offset: Option<usize>,
+    },
+    /// Stop reading aloud
+    Stop,
+    /// The voices there are: built in, and under [voice.engines] in config.toml
+    Engines,
+    /// Say some words with a voice, to try it
+    Say {
+        text: String,
+        #[arg(long)]
+        engine: Option<String>,
+    },
+    /// Read the reader at $HERDFOLD_SOCKET_PATH aloud, in this process (as `voice start` does)
+    #[command(hide = true)]
+    Run {
+        #[arg(long)]
+        engine: Option<String>,
+        #[arg(long)]
+        line: Option<usize>,
+        #[arg(long, requires = "line")]
+        offset: Option<usize>,
+    },
+}
+
+#[derive(Subcommand)]
 enum ApiCommand {
     /// Print or write the bundled API schema
     Schema {
@@ -377,6 +437,23 @@ fn main() -> Result<ExitCode> {
             });
             Ok(cli::finish("question:ask", cli::call("question:ask", call)))
         }
+        Some(Command::Text(TextCommand::Read {
+            line,
+            offset,
+            pages,
+            ruby,
+        })) => Ok(cli::finish(
+            "text:read",
+            cli::call(
+                "text:read",
+                Call::TextRead(api::TextReadParams {
+                    from: note::place(line, offset),
+                    pages,
+                    ruby,
+                }),
+            ),
+        )),
+        Some(Command::Voice(v)) => Ok(voice_command(v)),
         Some(Command::Events { types }) => Ok(cli::finish("events", cli::events(types))),
         Some(Command::Note(NoteCommand::List)) => Ok(cli::finish(
             "note:list",
@@ -525,6 +602,36 @@ fn reader_command(r: ReaderCommand) -> ExitCode {
             }),
         ),
         ReaderCommand::Close => ("reader:close", Call::ReaderClose(EmptyParams {})),
+    };
+    cli::finish(id, cli::call(id, call))
+}
+
+fn voice_command(v: VoiceCommand) -> ExitCode {
+    let (id, call) = match v {
+        VoiceCommand::Start {
+            engine,
+            line,
+            offset,
+        } => (
+            "voice:start",
+            Call::VoiceStart(api::VoiceStartParams {
+                engine,
+                from: note::place(line, offset),
+            }),
+        ),
+        VoiceCommand::Stop => (
+            "voice:stop",
+            Call::VoiceStop(api::VoiceStopParams::default()),
+        ),
+        VoiceCommand::Engines => return cli::finish("voice:engines", voice::list()),
+        VoiceCommand::Say { text, engine } => {
+            return cli::finish("voice:say", voice::say(engine, text));
+        }
+        VoiceCommand::Run {
+            engine,
+            line,
+            offset,
+        } => return cli::finish("voice:run", voice::run(engine, note::place(line, offset))),
     };
     cli::finish(id, cli::call(id, call))
 }

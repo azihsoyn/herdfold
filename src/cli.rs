@@ -94,6 +94,8 @@ pub fn events(types: Vec<String>) -> Result<(), CliError> {
         "question.asked",
         "book.finished",
         "anchors.checked",
+        "voice.started",
+        "voice.stopped",
     ];
     let types: Vec<String> = if types.is_empty() {
         all.iter()

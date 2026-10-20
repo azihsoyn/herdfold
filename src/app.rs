@@ -187,6 +187,16 @@ struct Reader {
     socket: Option<PathBuf>,
     /// Outcomes of work done off the main loop (asking the agent).
     background: (Sender<String>, Receiver<String>),
+    /// The voice reading the book aloud, if one is.
+    voice: Option<VoiceRun>,
+    /// The sentence the voice is on, or last read.
+    voice_at: Option<(Pos, Pos)>,
+}
+
+/// A voice reading aloud: the process, and the engine it reads with.
+struct VoiceRun {
+    child: std::process::Child,
+    engine: String,
 }
 
 /// What a session has seen, for its events.
@@ -319,6 +329,8 @@ pub fn run(doc: Document, book: Option<String>, opening: Opening) -> Result<()> 
         keymap: Keymap::default(),
         socket: None,
         background: mpsc::channel(),
+        voice: None,
+        voice_at: None,
     };
     // Always listening: the right-hand page attaches here, and an agent
     // writes its answers back here.
@@ -487,6 +499,16 @@ impl Reader {
             while let Ok(status) = self.background.1.try_recv() {
                 self.say(status);
             }
+            // A voice that ended without saying so.
+            if let Some(run) = &mut self.voice
+                && let Ok(Some(status)) = run.child.try_wait()
+            {
+                let error = (!status.success()).then(|| format!("it ended ({status})"));
+                self.stop_voice(error.clone());
+                self.say(error.map_or("Finished reading aloud".into(), |e| {
+                    format!("The voice stopped: {e}")
+                }));
+            }
             for (key, right) in std::mem::take(&mut keys) {
                 if self.handle_key(&key, right) {
                     self.closing = true;
@@ -494,6 +516,7 @@ impl Reader {
             }
             if self.closing {
                 self.save();
+                self.stop_voice(None);
                 self.end_session();
                 self.flush(server);
                 return Ok(());
@@ -774,6 +797,16 @@ impl Reader {
             .collect();
         if let Mode::Selected { from, to } = self.mode {
             paint.push((from, to, selected));
+        }
+        // The sentence being read aloud.
+        if self.voice.is_some()
+            && let Some((from, to)) = self.voice_at
+        {
+            let spoken = TextStyle {
+                found: true,
+                ..TextStyle::default()
+            };
+            paint.push((from, to, spoken));
         }
         if let Mode::Link(i) = self.mode {
             let l = self.doc.links[i];
@@ -1085,6 +1118,10 @@ impl Reader {
                 }),
                 ..Default::default()
             })),
+            Cmd::Voice if self.voice.is_some() => {
+                self.act(Call::VoiceStop(crate::api::VoiceStopParams::default()))
+            }
+            Cmd::Voice => self.act(Call::VoiceStart(crate::api::VoiceStartParams::default())),
             Cmd::Vertical => self.act(set(ReaderSetParams {
                 writing: Some(if self.vertical {
                     Writing::Horizontal
@@ -2893,6 +2930,7 @@ const TIPS: &[&str] = &[
     "`{contents}` opens the contents, when the book has chapters.",
     "`{animation}` turns the page-turn animation off, or on again.",
     "`{direction}` turns the book round for pages that run right to left, as Japanese books and manga do.",
+    "`{read_aloud}` reads the book aloud from here, turning the pages as it goes. The voice is chosen under [voice] in config.toml.",
     "Every key can be changed under [keys] in ~/.config/herdfold/config.toml.",
 ];
 
@@ -3047,6 +3085,8 @@ mod tests {
             pace: None,
             socket: None,
             background: mpsc::channel(),
+            voice: None,
+            voice_at: None,
         };
         r.fit((20, height), false);
         r

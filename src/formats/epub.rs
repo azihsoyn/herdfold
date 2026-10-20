@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use zip::ZipArchive;
 
 use super::xml::{self, Element, Node};
-use crate::doc::{Chapter, Document, Kind, Line, Link, Picture, Run, Style};
+use crate::doc::{Chapter, Document, Kind, Line, Link, Picture, Ruby, Run, Style};
 
 type Zip = ZipArchive<Cursor<Vec<u8>>>;
 
@@ -385,6 +385,10 @@ struct Html<'a> {
     open_styles: Vec<(usize, Style)>,
     /// Styled stretches of the line being built.
     line_styles: Vec<Run>,
+    /// Where the text the next reading reads starts, inside a ruby.
+    ruby_base: Option<usize>,
+    /// Readings in the line being built.
+    line_ruby: Vec<Ruby>,
     /// The level of the heading being read, if one is.
     heading: Option<u8>,
     /// Highlights the preformatted code being read, its language named.
@@ -408,6 +412,8 @@ impl<'a> Html<'a> {
             links: Vec::new(),
             open_styles: Vec::new(),
             line_styles: Vec::new(),
+            ruby_base: None,
+            line_ruby: Vec::new(),
             heading: None,
             code: None,
         }
@@ -499,9 +505,13 @@ impl<'a> Html<'a> {
             self.open_styles.push((self.cur.chars().count(), style));
         }
         // A ruby's reading follows what it reads, in brackets, dimmed.
-        if name == "rt" {
-            self.cur.push('（');
+        if name == "ruby" {
+            self.ruby_base = Some(self.cur.chars().count());
         }
+        let reading = (name == "rt").then(|| {
+            self.cur.push('（');
+            self.cur.chars().count()
+        });
         // A link within the book; one to the web is only text.
         let link = (name == "a")
             .then(|| e.attr("href"))
@@ -516,8 +526,22 @@ impl<'a> Html<'a> {
             }
         }
 
-        if name == "rt" {
+        if let Some(start) = reading {
+            let end = self.cur.chars().count();
+            if let Some(base) = self.ruby_base
+                && base + 1 < start
+            {
+                self.line_ruby.push(Ruby {
+                    base: base..start - 1,
+                    reading: start..end,
+                });
+            }
             self.cur.push('）');
+            // A ruby may read its text in parts, a reading after each.
+            self.ruby_base = self.ruby_base.map(|_| end + 1);
+        }
+        if name == "ruby" {
+            self.ruby_base = None;
         }
         // Closed after the bracket, so the bracket is dimmed too.
         if inline.is_some()
@@ -618,6 +642,11 @@ impl<'a> Html<'a> {
                     line.runs.push(Run { end, ..run });
                 }
             }
+            line.ruby = self
+                .line_ruby
+                .drain(..)
+                .filter(|r| r.reading.end <= len)
+                .collect();
             for (start, end, href) in self.line_links.drain(..) {
                 let end = end.min(line.text.chars().count());
                 line.runs.push(Run {
@@ -634,6 +663,7 @@ impl<'a> Html<'a> {
         }
         self.line_links.clear();
         self.line_styles.clear();
+        self.line_ruby.clear();
         for (start, _) in &mut self.open_styles {
             *start = 0;
         }
@@ -786,6 +816,13 @@ mod tests {
         assert!(d.lines[0].style.bold && d.lines[0].style.accent);
         let p = &d.lines[2];
         assert_eq!(p.text, "漢字（かんじ）を読む and more");
+        assert_eq!(
+            p.ruby,
+            [crate::doc::Ruby {
+                base: 0..2,
+                reading: 3..6
+            }]
+        );
         let styled = |i: usize| p.style_at(i);
         assert!(!styled(1).dim && styled(2).dim && styled(6).dim && !styled(7).dim);
         assert!(styled(8).italic && !styled(8).bold);

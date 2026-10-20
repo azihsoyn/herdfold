@@ -7,7 +7,8 @@ use super::*;
 use crate::api::{
     BookmarkAddParams, BookmarkInfo, BookmarkUpdateParams, ChapterInfo, EventData, FindInfo,
     IndexParams, LinkInfo, Move, NoteAddParams, NoteInfo, NoteUpdateParams, QuestionAskParams,
-    ReaderGoToParams, ReaderSetParams, ReaderSettings, ReaderStateInfo, TurnDirection,
+    ReaderGoToParams, ReaderSetParams, ReaderSettings, ReaderStateInfo, SentenceInfo,
+    TextReadParams, TurnDirection, VoiceStartParams,
 };
 
 /// A call refused: herdr's error code, and why.
@@ -183,6 +184,21 @@ impl Reader {
                     .collect(),
             }),
             Call::NoteAdd(p) => self.add_note_call(p),
+            Call::TextRead(p) => Ok(self.read_text(p)),
+            Call::VoiceStart(p) => self.start_voice(p),
+            Call::VoiceStop(p) => {
+                let stopped = self.stop_voice(p.error.clone());
+                match p.error {
+                    Some(e) => self.say(format!("The voice stopped: {e}")),
+                    None if stopped => self.say("Stopped reading aloud".into()),
+                    None => {}
+                }
+                Ok(ResponseResult::Ok)
+            }
+            Call::VoiceProgress(p) => {
+                self.voice_at = Some((p.at, p.end));
+                Ok(ResponseResult::Ok)
+            }
             Call::NoteUpdate(NoteUpdateParams { index, text, color }) => {
                 let note = self
                     .entry
@@ -297,6 +313,7 @@ impl Reader {
             bookmarks: self.entry.marks.len(),
             notes: self.entry.notes.len(),
             trail: self.trail.len(),
+            voice: self.voice.as_ref().map(|v| v.engine.clone()),
         }
     }
 
@@ -519,6 +536,113 @@ impl Reader {
             question,
         });
         Ok(ResponseResult::QuestionSent { agent: label })
+    }
+
+    /// The sentences from `p.from` (the open pages' start) for `p.pages`
+    /// pages (those open).
+    fn read_text(&self, p: TextReadParams) -> ResponseResult {
+        let from = p.from.unwrap_or_else(|| self.layout.start_of(self.page()));
+        let first = self.layout.page_of(from);
+        let after = first + p.pages.unwrap_or(self.step()).max(1);
+        let to = if after < self.layout.page_count() {
+            self.layout.start_of(after)
+        } else {
+            Pos {
+                line: usize::MAX,
+                offset: 0,
+            }
+        };
+        let sentences: Vec<SentenceInfo> = crate::spoken::sentences(&self.doc, from, to, p.ruby)
+            .into_iter()
+            .map(|s| SentenceInfo {
+                page: self.layout.page_of(s.at) + 1,
+                at: s.at,
+                end: s.end,
+                kind: s.kind,
+                text: s.text,
+            })
+            .collect();
+        // On from the last sentence, which may have run past the pages.
+        let next = (after < self.layout.page_count())
+            .then(|| sentences.last().map_or(to, |s| s.end.max(to)));
+        ResponseResult::Text { sentences, next }
+    }
+
+    /// Starts a voice reading the book aloud: a process of its own, a
+    /// client of this reader's socket.
+    fn start_voice(&mut self, p: VoiceStartParams) -> Result<ResponseResult, Refused> {
+        let voice = crate::voice::resolve(p.engine.as_deref())
+            .map_err(|e| refuse("unknown_engine", e.message))?;
+        let socket = self
+            .socket
+            .clone()
+            .ok_or_else(|| refuse("no_socket", "the reader has no socket for a voice"))?;
+        self.stop_voice(None);
+        let open = self.open_pages();
+        let from = match p.from {
+            Some(at) => {
+                let page = self.layout.page_of(at);
+                if !open.contains(&page) {
+                    self.jump(page);
+                }
+                at
+            }
+            // On from where the voice stopped, if that is still in view.
+            None => self
+                .voice_at
+                .map(|(at, _)| at)
+                .filter(|&at| open.contains(&self.layout.page_of(at)))
+                .unwrap_or_else(|| self.layout.start_of(self.page())),
+        };
+        let exe = std::env::current_exe()
+            .map_err(|e| refuse("internal", format!("cannot find herdfold: {e}")))?;
+        use std::os::unix::process::CommandExt;
+        let child = std::process::Command::new(exe)
+            .args(["voice", "run", "--engine", &voice.name])
+            .args(["--line", &from.line.to_string()])
+            .args(["--offset", &from.offset.to_string()])
+            .env(SOCKET_ENV, &socket)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            // Its own group, so ending it ends what it is playing too.
+            .process_group(0)
+            .spawn()
+            .map_err(|e| refuse("voice_failed", format!("cannot start the voice: {e}")))?;
+        self.voice = Some(VoiceRun {
+            child,
+            engine: voice.name.clone(),
+        });
+        self.voice_at = None;
+        self.say(format!("Reading aloud ({})", voice.name));
+        let at = self.place(from);
+        self.emit(EventData::VoiceStarted {
+            engine: voice.name.clone(),
+            at,
+        });
+        Ok(ResponseResult::VoiceStarted { engine: voice.name })
+    }
+
+    /// Ends the voice, if one is reading; whether one was.
+    pub(super) fn stop_voice(&mut self, error: Option<String>) -> bool {
+        let Some(mut run) = self.voice.take() else {
+            return false;
+        };
+        let pid = run.child.id() as i32;
+        // SAFETY: signals the process group the voice was started in.
+        unsafe {
+            libc::kill(-pid, libc::SIGTERM);
+        }
+        std::thread::spawn(move || {
+            let _ = run.child.wait();
+        });
+        let at = self.voice_at.map(|(at, _)| self.place(at));
+        self.emit(EventData::VoiceStopped {
+            engine: run.engine,
+            at,
+            error,
+        });
+        true
     }
 
     /// Calls on behalf of a key: a refusal is shown as a passing message,
