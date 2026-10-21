@@ -294,9 +294,7 @@ pub fn run(doc: Document, book: Option<String>, opening: Opening) -> Result<()> 
         vertical: entry.writing == Some(Writing::Vertical),
         entry,
         rtl,
-        cell: std::env::var("HERDR_PANE_ID")
-            .ok()
-            .and_then(|pane| herdr::cell_size(&pane)),
+        cell: crate::pictures::cell_size(),
         folded: Default::default(),
         trail: Vec::new(),
         pace: crate::log::pace(log_book.key.as_deref()),

@@ -1,17 +1,15 @@
 //! Pictures on the open page, set over the rows the layout left for them
-//! through herdr's graphics API. herdr draws a terminal's pane itself, so
-//! the terminal's own image protocols do not reach the screen from inside
-//! it; herdr's API does. A worker thread does the setting, so the reader
-//! never waits on it, and only the latest wish is carried out.
+//! with the Kitty graphics protocol, which herdr draws in its panes. A
+//! worker thread reads and scales them, so the reader never waits on it,
+//! and only the latest wish is carried out.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use ratatui::layout::Rect;
 use serde::{Deserialize, Serialize};
 
-use crate::herdr;
 use crate::view::{self, PageView};
 
 /// A picture on a page: on rows `row..row + rows` (counted as the page's
@@ -38,83 +36,78 @@ struct Placed {
 
 pub struct Pictures {
     shown: Vec<Placed>,
-    worker: Option<(Sender<Vec<Placed>>, thread::JoinHandle<()>)>,
+    /// Which wish the pictures on their way are for; older ones are dropped.
+    wish: u64,
+    worker: Option<Worker>,
 }
 
-/// How many picture layers herdr keeps for a pane.
-const LAYERS: usize = 16;
+struct Worker {
+    wishes: Sender<(u64, Vec<Placed>)>,
+    ready: Receiver<(u64, Vec<u8>)>,
+}
 
-/// The layer the `k`th picture of a page is set on.
-fn layer(k: usize) -> String {
-    format!("herdfold-{k}")
+/// The size of a character cell in pixels, if pictures can be set in this
+/// pane: inside herdr, which draws the Kitty graphics its panes write, and
+/// only when the pane says how many pixels it has.
+pub fn cell_size() -> Option<(u32, u32)> {
+    std::env::var_os("HERDR_PANE_ID")?;
+    let size = crossterm::terminal::window_size().ok()?;
+    let (w, h) = (
+        size.width as u32 / size.columns.max(1) as u32,
+        size.height as u32 / size.rows.max(1) as u32,
+    );
+    (w > 0 && h > 0).then_some((w, h))
 }
 
 impl Pictures {
-    /// For the pane this process draws in; inert outside herdr.
+    /// For the pane this process draws in; inert where pictures cannot be
+    /// set.
     pub fn new() -> Self {
-        let Some(pane) = std::env::var("HERDR_PANE_ID").ok() else {
+        let Some(cell) = cell_size() else {
             return Self {
                 shown: Vec::new(),
+                wish: 0,
                 worker: None,
             };
         };
-        let (tx, rx) = mpsc::channel::<Vec<Placed>>();
-        let worker = thread::spawn(move || {
-            // The cell's size, to send no more pixels than the cells show.
-            let cell = herdr::cell_size(&pane).unwrap_or((10, 20));
-            // Layers set and not yet taken out, each cleared by name: a
-            // clear without one does not reach them. The first clear sweeps
-            // every layer herdr allows, for what a reader that did not close
-            // cleanly left behind.
-            let mut set = LAYERS;
-            let clear = |set: &mut usize| {
-                for k in 0..*set {
-                    herdr::clear_picture(&pane, &layer(k));
-                }
-                *set = 0;
-            };
-            while let Ok(mut wanted) = rx.recv() {
+        // The worker reads and scales the pictures, so the reader never
+        // waits on it; what it makes is written to the terminal between
+        // frames, never in the middle of one.
+        let (wishes, wished) = mpsc::channel::<(u64, Vec<Placed>)>();
+        let (made, ready) = mpsc::channel();
+        thread::spawn(move || {
+            while let Ok(mut wanted) = wished.recv() {
                 // Only the latest wish matters.
-                while let Ok(newer) = rx.try_recv() {
+                while let Ok(newer) = wished.try_recv() {
                     wanted = newer;
                 }
-                clear(&mut set);
-                for p in &wanted {
-                    // Too large for herdr: try again at half the size.
-                    for shrink in 0..4 {
-                        let Some((data, size)) = prepare(p, cell, shrink) else {
-                            break;
-                        };
-                        match herdr::set_picture(
-                            &pane,
-                            &layer(set),
-                            "png",
-                            &data,
-                            size,
-                            p.at,
-                            p.cells,
-                        ) {
-                            Ok(()) => {
-                                set += 1;
-                                break;
-                            }
-                            Err(e) if e.contains("too large") => continue,
-                            Err(_) => break,
-                        }
+                let (wish, pictures) = wanted;
+                let mut out = Vec::new();
+                for (k, p) in pictures.iter().enumerate() {
+                    if let Some((png, _)) = prepare(p, cell) {
+                        out.extend(kitty_place(k as u32 + 1, &png, p.at, p.cells));
                     }
                 }
+                if made.send((wish, out)).is_err() {
+                    break;
+                }
             }
-            // The reader is closing: leave nothing behind.
-            clear(&mut set);
         });
+        // Sweep what a reader that did not close cleanly left behind.
+        write(KITTY_CLEAR);
         Self {
             shown: Vec::new(),
-            worker: Some((tx, worker)),
+            wish: 0,
+            worker: Some(Worker { wishes, ready }),
         }
     }
 
-    /// Shows the pictures of `page` drawn in `area`, or none.
+    /// Shows the pictures of `page` drawn in `area`, or none. Called after
+    /// each frame, it also sets the pictures the worker has made ready.
     pub fn show(&mut self, area: Rect, page: Option<&PageView>) {
+        let Some(worker) = &self.worker else {
+            return;
+        };
         let wanted: Vec<Placed> = page
             .map(|v| {
                 let (x, _) = view::column(area, v.width);
@@ -129,29 +122,67 @@ impl Pictures {
                     .collect()
             })
             .unwrap_or_default();
-        if wanted == self.shown {
-            return;
+        if wanted != self.shown {
+            // The page's pictures go as soon as it does.
+            write(KITTY_CLEAR);
+            self.wish += 1;
+            if !wanted.is_empty() {
+                let _ = worker.wishes.send((self.wish, wanted.clone()));
+            }
+            self.shown = wanted;
         }
-        if let Some((tx, _)) = &self.worker {
-            let _ = tx.send(wanted.clone());
+        while let Ok((wish, out)) = worker.ready.try_recv() {
+            if wish == self.wish && !out.is_empty() {
+                write(&out);
+            }
         }
-        self.shown = wanted;
     }
 }
 
-/// A picture ready for herdr, as a PNG: its data in base64 and its size in
-/// pixels. A PNG that already fits its cells goes as it is; anything else
-/// is decoded, scaled down to the cells (and halved `shrink` times more),
-/// and encoded as a PNG. herdr refuses large raw pixel data, and takes the
-/// same picture compressed.
-fn prepare(p: &Placed, (cw, ch): (u32, u32), shrink: u32) -> Option<(String, (u32, u32))> {
+/// Takes every picture this pane set out, and the data kept for them.
+const KITTY_CLEAR: &[u8] = b"\x1b_Ga=d,d=A,q=2\x1b\\";
+
+/// The Kitty graphics that set `png` (base64) as picture `id` over `cells`
+/// from (`col`, `row`): the cursor taken there and back, so the frame drawn
+/// around it is left as it was, and the data sent in pieces of the size
+/// the protocol takes.
+fn kitty_place(id: u32, png: &str, (col, row): (u16, u16), (cols, rows): (u16, u16)) -> Vec<u8> {
+    const PIECE: usize = 4096;
+    let mut out = format!("\x1b7\x1b[{};{}H", row + 1, col + 1).into_bytes();
+    let pieces: Vec<&[u8]> = png.as_bytes().chunks(PIECE).collect();
+    for (k, piece) in pieces.iter().enumerate() {
+        let more = u8::from(k + 1 < pieces.len());
+        if k == 0 {
+            out.extend(
+                format!("\x1b_Ga=T,f=100,t=d,i={id},c={cols},r={rows},C=1,q=2,m={more};")
+                    .as_bytes(),
+            );
+        } else {
+            out.extend(format!("\x1b_Gm={more};").as_bytes());
+        }
+        out.extend_from_slice(piece);
+        out.extend_from_slice(b"\x1b\\");
+    }
+    out.extend_from_slice(b"\x1b8");
+    out
+}
+
+/// Writes `bytes` to the terminal at once.
+fn write(bytes: &[u8]) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(bytes).and_then(|()| out.flush());
+}
+
+/// A picture ready to be set, as a PNG: its data in base64 and its size in
+/// pixels. A PNG that already fits
+/// its cells goes as it is; anything else is decoded, scaled down to the
+/// cells, and encoded as a PNG.
+fn prepare(p: &Placed, (cw, ch): (u32, u32)) -> Option<(String, (u32, u32))> {
     let bytes = std::fs::read(&p.path).ok()?;
-    let fits = (
-        (p.cells.0 as u32 * cw) >> shrink,
-        (p.cells.1 as u32 * ch) >> shrink,
-    );
+    let fits = (p.cells.0 as u32 * cw, p.cells.1 as u32 * ch);
     let png = bytes.starts_with(b"\x89PNG\r\n\x1a\n");
-    if png && shrink == 0 && p.size.0 <= fits.0 && p.size.1 <= fits.1 {
+    if png && p.size.0 <= fits.0 && p.size.1 <= fits.1 {
         return Some((base64(&bytes), p.size));
     }
     let picture = image::load_from_memory(&bytes).ok()?;
@@ -180,11 +211,10 @@ pub fn cache_dir() -> Option<PathBuf> {
 }
 
 impl Drop for Pictures {
-    /// Waits for the worker to take the pictures out before the reader goes.
+    /// Takes the pictures out before the reader goes.
     fn drop(&mut self) {
-        if let Some((tx, worker)) = self.worker.take() {
-            drop(tx);
-            let _ = worker.join();
+        if self.worker.take().is_some() {
+            write(KITTY_CLEAR);
         }
     }
 }
@@ -234,7 +264,7 @@ mod tests {
     #[test]
     fn a_small_png_goes_as_it_is() {
         let path = file("small.png", image::ImageFormat::Png, 20, 10);
-        let (data, size) = prepare(&placed(path.clone(), (20, 10), (4, 1)), (10, 20), 0).unwrap();
+        let (data, size) = prepare(&placed(path.clone(), (20, 10), (4, 1)), (10, 20)).unwrap();
         assert_eq!(size, (20, 10));
         assert_eq!(data, base64(&std::fs::read(&path).unwrap()));
         let _ = std::fs::remove_file(path);
@@ -245,11 +275,18 @@ mod tests {
         let path = file("big.jpg", image::ImageFormat::Jpeg, 800, 400);
         // 10 x 4 cells of 10 x 20 pixels show at most 100 x 80.
         let p = placed(path.clone(), (800, 400), (10, 4));
-        let (data, size) = prepare(&p, (10, 20), 0).unwrap();
+        let (data, size) = prepare(&p, (10, 20)).unwrap();
         assert_eq!(size, (100, 50));
         assert!(data.starts_with(&base64(b"\x89PNG")[..4]));
-        // Asked to shrink, it halves again.
-        assert_eq!(prepare(&p, (10, 20), 1).unwrap().1, (50, 25));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_picture_is_set_in_pieces_with_the_cursor_put_back() {
+        let png = "A".repeat(5000);
+        let out = String::from_utf8(kitty_place(2, &png, (3, 1), (10, 4))).unwrap();
+        assert!(out.starts_with("\x1b7\x1b[2;4H\x1b_Ga=T,f=100,t=d,i=2,c=10,r=4,C=1,q=2,m=1;AAAA"));
+        assert!(out.contains(&format!("A\x1b\\\x1b_Gm=0;{}\x1b\\", "A".repeat(904))));
+        assert!(out.ends_with("\x1b\\\x1b8"));
     }
 }
