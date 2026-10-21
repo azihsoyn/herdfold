@@ -111,13 +111,11 @@ on from one to the next. Elsewhere it shows one page at a time.
 
 Inside herdr, pictures in Markdown (local files) and in EPUB books are set
 on the page, on rows the layout leaves for them, never split across pages.
-PNG, JPEG, GIF, WebP and BMP are read. herdr draws its panes itself, so
-the terminal's own image protocols (`imgcat` and the like) do not get
-through it; herdfold uses herdr's graphics API instead. Pictures inside an
-EPUB are kept in `~/.cache/herdfold/pictures` (`$XDG_CACHE_HOME` if set).
-Outside herdr, and for pictures on the web, their description is shown.
-herdr 0.9 sets pictures in compatible terminals as it comes; before that,
-with `experimental.kitty_graphics` switched on.
+PNG, JPEG, GIF, WebP and BMP are read. herdfold writes them to its pane
+with the Kitty graphics protocol, which herdr (0.9.2 or later) draws in
+whatever terminal it runs in. Pictures inside an EPUB are kept in
+`~/.cache/herdfold/pictures` (`$XDG_CACHE_HOME` if set). Outside herdr,
+and for pictures on the web, their description is shown.
 
 ## The reading log
 
