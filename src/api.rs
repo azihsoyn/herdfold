@@ -8,9 +8,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::doc::Kind;
 use crate::formats::Format;
 use crate::layout::Pos;
 use crate::marks::{Anchor, Author, Direction, NoteDisplay, Ribbon, Writing};
+use crate::spoken::RubyReading;
 use crate::turn::Turn;
 use crate::view::PageView;
 
@@ -102,6 +104,72 @@ pub enum Call {
     /// them); it answers in its own pane, and back in the book as a note.
     #[serde(rename = "question.ask")]
     QuestionAsk(QuestionAskParams),
+    /// The book's text as it is read aloud: in sentences, from the open
+    /// pages (or a place), with where each is. Nothing moves.
+    #[serde(rename = "text.read")]
+    TextRead(TextReadParams),
+    /// Read the book aloud from the open pages, turning them as it goes,
+    /// with a voice named under `[voice.engines]` in config.toml (or one
+    /// built in: `system`, `voiceover`, `openai`).
+    #[serde(rename = "voice.start")]
+    VoiceStart(VoiceStartParams),
+    /// Stop reading aloud. A voice that ended on its own says why.
+    #[serde(rename = "voice.stop")]
+    VoiceStop(VoiceStopParams),
+    /// From the voice: the sentence it is reading now, to be shown.
+    #[serde(rename = "voice.progress")]
+    VoiceProgress(VoiceProgressParams),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TextReadParams {
+    /// Where to begin; the open pages' start when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<Pos>,
+    /// How many pages' worth, from the page `from` is on; the pages open
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pages: Option<usize>,
+    #[serde(default)]
+    pub ruby: RubyReading,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct VoiceStartParams {
+    /// The voice; the one config.toml names under `[voice]` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// Where to begin; where the voice last stopped if that is on the open
+    /// pages, else their start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<Pos>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct VoiceStopParams {
+    /// Why the voice could not go on, when it stops itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct VoiceProgressParams {
+    pub at: Pos,
+    pub end: Pos,
+}
+
+/// A sentence as it is read aloud.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SentenceInfo {
+    pub at: Pos,
+    /// Where it ends (exclusive).
+    pub end: Pos,
+    /// The page it starts on, from 1.
+    pub page: usize,
+    /// `body` and `heading` are prose; `pre` a line of code, `table` a
+    /// table's row (its cells, by commas), `image` a picture's description.
+    pub kind: Kind,
+    pub text: String,
 }
 
 #[derive(
@@ -263,6 +331,9 @@ pub struct ReaderStateInfo {
     pub notes: usize,
     /// How many jumps `reader.back` can go back along.
     pub trail: usize,
+    /// The voice reading the book aloud, if one is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -383,6 +454,10 @@ pub enum Subscription {
     BookFinished,
     #[serde(rename = "anchors.checked")]
     AnchorsChecked,
+    #[serde(rename = "voice.started")]
+    VoiceStarted,
+    #[serde(rename = "voice.stopped")]
+    VoiceStopped,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -491,6 +566,17 @@ pub enum ResponseResult {
     QuestionSent {
         agent: String,
     },
+    /// Sentences from where asked; `next` is where to read on from, none
+    /// at the end of the book.
+    Text {
+        sentences: Vec<SentenceInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<Pos>,
+    },
+    /// The voice named has begun reading.
+    VoiceStarted {
+        engine: String,
+    },
     Ok,
 }
 
@@ -545,6 +631,8 @@ pub enum EventKind {
     QuestionAsked,
     BookFinished,
     AnchorsChecked,
+    VoiceStarted,
+    VoiceStopped,
 }
 
 /// What happened. The reading log keeps these too, but for the pages shown
@@ -645,6 +733,20 @@ pub enum EventData {
         moved: usize,
         lost: usize,
     },
+    /// A voice began reading the book aloud, from `at`.
+    VoiceStarted {
+        engine: String,
+        at: Place,
+    },
+    /// The voice stopped: asked to, at the book's end, or for `error`.
+    VoiceStopped {
+        engine: String,
+        /// The last sentence it read.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<Place>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
 }
 
 fn turned() -> Move {
@@ -670,6 +772,8 @@ impl EventData {
             Self::QuestionAsked { .. } => EventKind::QuestionAsked,
             Self::BookFinished { .. } => EventKind::BookFinished,
             Self::AnchorsChecked { .. } => EventKind::AnchorsChecked,
+            Self::VoiceStarted { .. } => EventKind::VoiceStarted,
+            Self::VoiceStopped { .. } => EventKind::VoiceStopped,
         }
     }
 
@@ -708,6 +812,8 @@ impl EventEnvelope {
             EventKind::QuestionAsked => Subscription::QuestionAsked,
             EventKind::BookFinished => Subscription::BookFinished,
             EventKind::AnchorsChecked => Subscription::AnchorsChecked,
+            EventKind::VoiceStarted => Subscription::VoiceStarted,
+            EventKind::VoiceStopped => Subscription::VoiceStopped,
         }
     }
 }

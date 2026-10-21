@@ -148,6 +148,59 @@ to a herdr agent in the same tab (else the same workspace, or the one named
 with `--agent`). It answers in its own pane, and keeps a short answer in the
 book as a note (`✦`) by running `herdfold note add`.
 
+## Reading aloud
+
+`r` reads the book aloud from the open pages, the sentence being read
+underlined, and turns the page when the voice comes to the next; `r` again
+stops it, and once more goes on from there. Turning or jumping yourself
+takes the voice along. Readings are read for the text they read (羅生門
+（らしょうもん） as らしょうもん), and code is left out.
+
+The voice is yours to choose. Built in are `system` (`say` on macOS,
+`espeak-ng` or `spd-say` elsewhere), `openai` (OpenAI's speech API, with
+the key in `OPENAI_API_KEY`) and `voiceover`, which hands the open pages
+to VoiceOver whenever they change and leaves the reading and the turning
+to you. Any other program will do, given each sentence on stdin, or in
+place of `{}` among its arguments:
+
+```toml
+[voice]
+engine = "kyoko"         # the voice `r` uses [default: system]
+code = "skip"            # or "read"
+ruby = "reading"         # or "base", "both"
+
+[voice.engines.kyoko]
+type = "system"
+voice = "Kyoko"
+rate = 220
+
+[voice.engines.openai]
+type = "openai"
+model = "gpt-4o-mini-tts"
+voice = "coral"
+instructions = "Calm and unhurried, as if reading a novel aloud."
+# url = "http://localhost:8880/v1/audio/speech"   # another server in OpenAI's shape
+# key_env = "OPENAI_API_KEY"
+# format = "mp3"
+# player = ["afplay"]
+
+[voice.engines.piper]
+type = "command"
+command = ["sh", "-c", "piper -m ja.onnx --output-raw | aplay -r 22050 -f S16_LE -t raw -"]
+```
+
+```sh
+herdfold voice engines                      # the voices there are
+herdfold voice say "試しに" --engine openai   # try one
+herdfold voice start [--engine NAME]        # read the open book aloud
+herdfold voice stop
+herdfold text read [--pages N] [--ruby base] # the sentences, as a voice gets them
+```
+
+A voice is a client of the socket like any other: it takes the sentences
+with `text.read`, shows which it is on with `voice.progress`, and turns
+with `reader.turn`; anything that can do the same can read the book aloud.
+
 ## Keys
 
 | Key | |
@@ -167,6 +220,7 @@ book as a note (`✦`) by running `herdfold note add`.
 | `l` | bookmarks and notes |
 | `N` | notes as footnotes / in the margin / marks only |
 | `?` | ask the agent about the open pages |
+| `r` | read aloud from here (again to stop) |
 | `<` / `>` | shorter / longer rows |
 | `a` | page-turn animation on / off |
 | `D` | pages run left to right / right to left |
@@ -195,7 +249,7 @@ ask = "A"
 
 The actions: `next_page` `previous_page` `contents` `go_back`
 `follow_link` `search` `bookmark` `bookmark_color` `note` `choose_row`
-`list` `note_display` `ask` `shorter_rows` `longer_rows` `animation`
+`list` `note_display` `ask` `read_aloud` `shorter_rows` `longer_rows` `animation`
 `direction` `vertical` `help` `tip` `up` `down` `enter` `remove` `back`
 `quit`. `herdfold config check` reports what is wrong
 with the file; `herdfold config reset-keys` backs it up and removes `[keys]`.
@@ -245,10 +299,12 @@ do whatever a reader can, and see whatever a reader does.
 | `bookmark.list` · `.add` · `.update` · `.remove` | ribbons |
 | `note.list` · `.add` · `.update` · `.remove` | notes and markers |
 | `question.ask` | ask an agent beside the book |
+| `text.read` | the text as it is read aloud: sentences, each with its place and page |
+| `voice.start` · `voice.stop` · `voice.progress` | read aloud with a voice; a voice says which sentence it is on |
 
 Events: `session.started`, `reader.moved` (by a turn, a jump or going
 back), `bookmark.added`/`changed`/`removed`, `note.added`/`changed`/`removed`,
-`search.done`, `question.asked`, `book.finished`, `settings.changed`,
+`search.done`, `question.asked`, `book.finished`, `voice.started`/`stopped`, `settings.changed`,
 `session.ended`, `reader.closed`, and `page.shown` (the pages as drawn,
 which the right-hand pane draws from). The reading log is these same
 events, each with its session and time.

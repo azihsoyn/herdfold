@@ -118,6 +118,16 @@ pub struct Line {
     pub image: Option<Picture>,
     /// For a table row, where each cell's text is, in characters.
     pub cells: Vec<std::ops::Range<usize>>,
+    /// Readings set after the text they read, in brackets: 漢字（かんじ）.
+    pub ruby: Vec<Ruby>,
+}
+
+/// A reading in the line: `base` is the text read, `reading` how it reads,
+/// in characters; the brackets around the reading lie just outside it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ruby {
+    pub base: std::ops::Range<usize>,
+    pub reading: std::ops::Range<usize>,
 }
 
 /// A picture to set in the book: an image file and its size in pixels.
@@ -158,6 +168,7 @@ impl Line {
             gutter: String::new(),
             image: None,
             cells: Vec::new(),
+            ruby: Vec::new(),
         }
     }
 
