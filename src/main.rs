@@ -17,6 +17,7 @@ mod note;
 mod pictures;
 mod server;
 mod shelf;
+mod skill;
 mod spoken;
 mod turn;
 mod view;
@@ -77,6 +78,10 @@ struct Cli {
     #[arg(long, value_name = "NAME|PANE")]
     agent: Option<String>,
 
+    /// Print the agent skill file and exit.
+    #[arg(long, conflicts_with_all = ["format", "file"])]
+    skill: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -124,6 +129,19 @@ enum Command {
     /// Manage local configuration ($XDG_CONFIG_HOME/herdfold/config.toml)
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Install herdfold's skill for an agent
+    #[command(subcommand)]
+    Integration(IntegrationCommand),
+}
+
+#[derive(Subcommand)]
+enum IntegrationCommand {
+    /// Install the skill (a skill of the same name is kept as SKILL.md.bak)
+    Install { target: skill::Target },
+    /// Remove the skill, if herdfold installed it
+    Uninstall { target: skill::Target },
+    /// Show whether the skill is installed, and by which version
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -377,6 +395,10 @@ enum ApiCommand {
 
 fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
+    if cli.skill {
+        print!("{}", skill::SKILL);
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(theme) = &cli.theme {
         if !highlight::is_theme(theme) {
             let e = cli::CliError::new(
@@ -488,6 +510,16 @@ fn main() -> Result<ExitCode> {
             });
             println!("{reply}");
             Ok(ExitCode::SUCCESS)
+        }
+        Some(Command::Integration(IntegrationCommand::Install { target })) => {
+            Ok(cli::finish("integration:install", skill::install(target)))
+        }
+        Some(Command::Integration(IntegrationCommand::Uninstall { target })) => Ok(cli::finish(
+            "integration:uninstall",
+            skill::uninstall(target),
+        )),
+        Some(Command::Integration(IntegrationCommand::Status)) => {
+            Ok(cli::finish("integration:status", skill::status()))
         }
         Some(Command::Config(ConfigCommand::ResetKeys)) => {
             Ok(cli::finish("config:reset-keys", keys::reset()))
