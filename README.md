@@ -146,6 +146,20 @@ to a herdr agent in the same tab (else the same workspace, or the one named
 with `--agent`). It answers in its own pane, and keeps a short answer in the
 book as a note (`✦`) by running `herdfold note add`.
 
+herdfold comes with a skill that tells an agent how to open books for you,
+answer these questions, and work an open book through the commands below.
+For Claude Code:
+
+```sh
+herdfold integration install claude   # ~/.claude/skills/herdfold/SKILL.md
+herdfold integration status           # installed, and by which version
+herdfold --skill                      # print it, for another agent
+```
+
+Run `install` again after upgrading herdfold. A skill of the same name that
+herdfold did not install is kept beside it as `SKILL.md.bak`, and
+`uninstall` removes only one herdfold installed.
+
 ## Reading aloud
 
 `r` reads the book aloud from the open pages, the sentence being read
